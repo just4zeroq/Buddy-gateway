@@ -70,7 +70,7 @@
 | Telegram | `telegram` | HTTP 长轮询 | ✅ | ✅ |
 | Discord | `discord` | Gateway WebSocket + REST（支持代理） | ✅ | ✅ |
 
-每个通道都实现了：真实长连接、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/PARITY.md`](docs/PARITY.md)。
+每个通道都实现了：真实长连接、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/CHANNELS.md`](docs/CHANNELS.md)。
 
 ## 快速开始
 
@@ -207,7 +207,7 @@ cargo build --release       # 优化构建
 
 ## 通道覆盖
 
-每个通道都实现了真实传输、入站媒体解析、出站媒体上传、覆写钩子与配置别名。逐通道矩阵见 [`docs/PARITY.md`](docs/PARITY.md)；架构说明见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+每个通道都实现了真实传输、入站媒体解析、出站媒体上传、覆写钩子与配置别名。逐通道矩阵见 [`docs/CHANNELS.md`](docs/CHANNELS.md)；架构说明见 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
 ## 📄 许可证
 

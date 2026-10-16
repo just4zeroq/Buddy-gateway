@@ -1,6 +1,5 @@
 //! 全通道 AI Bot 示例 — 企业微信 / QQ / 飞书 / 微信 同时运行.
 //!
-//! Mirrors `examples/all_channels.py`.
 //!
 //! Run:
 //! ```text
@@ -32,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let processor = common::echo_processor();
     let mut manager = ChannelManager::new(Some(processor.clone()))
         .with_workers_per_channel(4)
-        .with_media_backend(Arc::new(FileSystemMediaBackend::new("/tmp/octop-gateway/media")));
+        .with_media_backend(Arc::new(FileSystemMediaBackend::new("/tmp/buddy-gateway/media")));
     manager.start().await?;
 
     // 企业微信

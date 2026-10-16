@@ -1,7 +1,7 @@
 //! Shared helpers for the Rust examples.
 //!
-//! Mirrors the small runtime plumbing the Python examples get from
-//! `python-dotenv` + `logging.basicConfig()`, plus a couple of processors.
+//! Small runtime plumbing:
+//! (dotenv loading + logging setup), plus a couple of processors.
 
 #![allow(dead_code)]
 
@@ -20,7 +20,7 @@ use buddy_gateway::models::{InboundMessage, MessageEvent};
 // ---------------------------------------------------------------------------
 
 /// Load a `.env` file (simple `KEY=VALUE` lines) into the process environment
-/// without overwriting already-set variables. Mirrors `load_dotenv()`.
+/// without overwriting already-set variables.
 ///
 /// The file path is taken from `DOTENV_PATH` (default: `./.env`). Also
 /// initializes `tracing` logging at `INFO`.
@@ -119,7 +119,7 @@ pub fn static_reply_processor(reply: &'static str) -> MessageProcessor {
 
 /// Build a runtime constraints override map from `(key, value)` pairs.
 ///
-/// Recognised keys mirror `Channel::set_constraints`: `show_thinking`,
+/// Recognised keys match `Channel::set_constraints`: `show_thinking`,
 /// `show_tool_hints`, `reply_timeout`, `typing_keepalive_interval`,
 /// `timeout_strategy`, `placeholder_texts`, `send_rate_limit`.
 pub fn constraints(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
@@ -133,7 +133,7 @@ pub fn constraints(pairs: &[(&str, Value)]) -> HashMap<String, Value> {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-/// Block until Ctrl-C — mirrors Python's `await asyncio.Event().wait()`.
+/// Block until Ctrl-C.
 pub async fn wait_forever() {
     match tokio::signal::ctrl_c().await {
         Ok(()) => {}

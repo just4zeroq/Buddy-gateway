@@ -1,4 +1,4 @@
-//! Tests for the channel manager (mirrors tests/test_manager.py).
+//! Tests for the channel manager.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

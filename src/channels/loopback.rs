@@ -2,8 +2,8 @@
 //!
 //! Does not connect to any external platform. Inbound payloads are parsed
 //! (optionally echoing), and outbound replies are captured into an in-memory
-//! buffer so tests can assert on what the pipeline produced. Faithful to the
-//! common contract; useful as the default channel in integration tests.
+//! buffer so tests can assert on what the pipeline produced. It follows the
+//! common contract and is useful as the default channel in integration tests.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

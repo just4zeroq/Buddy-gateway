@@ -1,4 +1,4 @@
-//! Tests for models (mirrors tests/test_models.py).
+//! Tests for models.
 
 use buddy_gateway::models::{
     AudioContent, ChannelSubject, ContentPart, ContentType, FileContent, ImageContent,

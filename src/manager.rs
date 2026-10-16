@@ -1,5 +1,4 @@
 //! Channel manager: orchestrates multiple channels with session-aware batching.
-//! Mirrors `octop_gateway.manager`.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -20,19 +19,19 @@ use crate::models::{ChannelSubject, ContentPart, InboundMessage, RawPayload};
 
 type SessionLocks = StdMutex<HashMap<String, Arc<AsyncMutex<()>>>>;
 
-/// Host hook invoked before the session lock is taken, mirroring Python
-/// `on_pre_lock` (used to signal cancellation for `/stop` before the in-flight
+/// Host hook invoked before the session lock is taken.
+/// Used to signal cancellation for `/stop` before the in-flight
 /// turn releases the lock).
 pub type PreLockHandler = Arc<
     dyn Fn(String, InboundMessage) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
 >;
 
-/// Predicate over a parsed inbound message, mirroring Python
-/// `control_message_predicate` / `interrupt_message_predicate`.
+/// Predicate over a parsed inbound message.
+/// Used for control / interrupt classification.
 pub type MessagePredicate = Arc<dyn Fn(&InboundMessage) -> bool + Send + Sync>;
 
 /// Optional construction options for [`ChannelManager::add_channel_full`] and the
-/// `add_*_channel` convenience methods. Mirrors the Python `processor=` /
+/// `add_*_channel` convenience methods. Carries the optional per-channel
 /// `channel_id=` / `tenant_id=` / `**kwargs` (e.g. `debounce_seconds`,
 /// `constraints`) forwarded to the channel constructor.
 #[derive(Clone, Default)]
@@ -111,7 +110,7 @@ impl ChannelManager {
         self
     }
 
-    /// Install or clear the pre-session-lock inbound hook (mirrors Python
+    /// Install or clear the pre-session-lock inbound hook
     /// `ChannelManager.set_pre_lock_handler`).
     pub fn set_pre_lock_handler(&mut self, handler: Option<PreLockHandler>) {
         self.on_pre_lock = handler;
@@ -278,7 +277,7 @@ impl ChannelManager {
             }
         };
 
-        // Interrupt path (mirrors Python `_put_to_queue`): urgent control
+        // Interrupt path : urgent control
         // messages bypass the session lock and are handled immediately.
         if let Some(pred) = self.interrupt_message_predicate.clone() {
             if let Some(ch) = self.channels.get(channel_id).cloned() {
@@ -300,7 +299,7 @@ impl ChannelManager {
                         self.interrupt_tasks.lock().unwrap().push(handle);
                         return;
                     }
-                    // Reuse the parsed message (Python enqueues the parsed object).
+                    // Reuse the parsed message (enqueues the parsed object).
                     if tx.try_send(RawPayload::Preparsed(message)).is_err() {
                         tracing::error!("Queue full/closed for {}; dropping payload", channel_id);
                     }
@@ -355,7 +354,7 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Known subjects for a specific channel (mirrors Python `list_subjects`).
+    /// Known subjects for a specific channel.
     pub async fn list_subjects(&self, channel_id: &str) -> Vec<ChannelSubject> {
         match self.channels.get(channel_id) {
             Some(ch) => ch.lock().await.list_subjects(),
@@ -363,7 +362,7 @@ impl ChannelManager {
         }
     }
 
-    /// Known subjects across all channels (mirrors Python `list_all_users`).
+    /// Known subjects across all channels.
     pub async fn list_all_users(&self) -> HashMap<String, Vec<ChannelSubject>> {
         let mut out = HashMap::new();
         for (cid, ch) in self.channels.iter() {
@@ -401,7 +400,7 @@ impl ChannelManager {
     // Channel management
     // -----------------------------------------------------------------------
 
-    /// Get a channel handle by id (mirrors Python `get_channel`).
+    /// Get a channel handle by id.
     pub fn get_channel(
         &self,
         channel_id: &str,
@@ -424,8 +423,7 @@ impl ChannelManager {
     }
 
     /// Add a channel from a kind string + JSON config, with full options
-    /// (mirrors Python `add_channel(..., processor=, channel_id=, tenant_id=,
-    /// **kwargs)` where kwargs = `debounce_seconds` / `constraints`).
+    /// ` where kwargs = `debounce_seconds` / `constraints`).
     pub async fn add_channel_full(
         &mut self,
         channel_type: &str,
@@ -474,7 +472,7 @@ impl ChannelManager {
     }
 
     /// Start/stop an ephemeral channel to verify credentials, without
-    /// registering it (mirrors Python `probe_channel`). Credentials are
+    /// registering it . Credentials are
     /// validated by `build_channel` before any connection attempt.
     pub async fn probe_channel(
         &mut self,
@@ -489,7 +487,7 @@ impl ChannelManager {
             .ok_or(GatewayError::NoProcessor)?;
 
         // Yuanbao appears to allow only one effective bot WebSocket session, so
-        // a UI probe uses sign-token only (mirrors Python probe_channel).
+        // a UI probe uses sign-token only.
         let mut config = config;
         if channel_type == "yuanbao" {
             if let Some(obj) = config.as_object_mut() {
@@ -565,8 +563,8 @@ impl ChannelManager {
     }
 
     // -----------------------------------------------------------------------
-    // Convenience channel builders (mirror the `add_*_channel` shorthands and
-    // accept the same optional `opts` as Python's processor=/**kwargs).
+    // Convenience channel builders (the `add_*_channel` shorthands and
+    // accept the same optional `opts` as processor=/**kwargs).
     // -----------------------------------------------------------------------
 
     fn resolve_processor(&self, opts: &ChannelOptions) -> Result<MessageProcessor> {
@@ -833,7 +831,7 @@ async fn process_one(
     let message = guard.parse_inbound(&payload)?;
     let session_key = guard.get_debounce_key(&message);
 
-    // Control messages never batch (mirrors Python `_worker_loop`).
+    // Control messages never batch.
     let is_control = control_pred.map(|p| p(&message)).unwrap_or(false);
 
     // Drain additional same-session items (non-blocking).

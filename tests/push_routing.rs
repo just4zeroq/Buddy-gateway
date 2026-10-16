@@ -1,4 +1,4 @@
-//! Tests for push routing helpers (mirrors tests/test_push_routing.py).
+//! Tests for push routing helpers.
 
 use std::collections::HashMap;
 

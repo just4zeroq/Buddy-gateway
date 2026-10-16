@@ -1,6 +1,5 @@
 //! QQ Bot 高级示例：`/image` 发送示例图片 + 周期性打印已知通道.
 //!
-//! Mirrors `examples/advanced/qq_advanced.py`.
 //!
 //! Run:
 //! ```text

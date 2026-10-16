@@ -2,7 +2,7 @@
 name = "buddy-gateway"
 version = "0.1.0"
 edition = "2021"
-description = "Multi-platform IM channel bridge for AI agents and bots (Rust port of octop-gateway)"
+description = "Multi-platform IM channel bridge for AI agents and bots"
 license = "MIT"
 
 [dependencies]
@@ -15,7 +15,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 # Pin a single rustls crypto provider so WSS handshakes don't panic with
 # "Could not automatically determine the process-level CryptoProvider".
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# WS-over-HTTP-proxy support (mirrors discord.py / aiohttp proxy handling).
+# WS-over-HTTP-proxy support (HTTP CONNECT tunneling).
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 webpki-roots = "0.26"
 rumqttc = { version = "0.25", features = ["websocket"] }
@@ -29,7 +29,7 @@ mime_guess = "2"
 rand = "0.8"
 bytes = "1"
 regex = "1"
-# --- crypto / codecs (platform parity: signatures, CDN encryption, COS) ---
+# --- crypto / codecs (signatures, CDN encryption, COS) ---
 sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"

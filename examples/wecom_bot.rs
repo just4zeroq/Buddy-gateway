@@ -1,6 +1,5 @@
 //! 企业微信 (WeCom) AI Bot 示例 — 占位符超时策略 + 限流.
 //!
-//! Mirrors `examples/wecom_bot.py`.
 //!
 //! Run:
 //! ```text

@@ -1,12 +1,12 @@
 //! DingTalk channel (钉钉).
 //!
-//! Mirrors `octop_gateway.channels.dingtalk`. Receives robot messages through
+//! Receives robot messages through
 //! the DingTalk **Stream** protocol (a WebSocket long connection) and sends
 //! replies either via the per-message `sessionWebhook` or through the robot
 //! OpenAPI (`robot/oToMessages/batchSend`). Media is uploaded via the legacy
 //! `/media/upload` OAPI endpoint.
 //!
-//! Python uses the `dingtalk-stream` SDK; here the stream handshake
+//! uses the `dingtalk-stream` SDK; here the stream handshake
 //! (connection open → WebSocket → ack frames → CALLBACK dispatch) is
 //! re-implemented directly on `tokio-tungstenite` (see [`mod stream`]).
 //!
@@ -127,7 +127,7 @@ impl DingTalkChannel {
         let payload = if text.chars().count() > 3500 {
             json!({ "msgtype": "text", "text": { "content": text } })
         } else {
-            json!({ "msgtype": "markdown", "markdown": { "title": "Octop", "text": text } })
+            json!({ "msgtype": "markdown", "markdown": { "title": "Buddy", "text": text } })
         };
         match http.post(webhook_url).json(&payload).send().await {
             Ok(resp) => match resp.json::<Value>().await {
@@ -162,7 +162,7 @@ impl DingTalkChannel {
         let (msg_key, msg_param) = if text.chars().count() > 3500 {
             ("sampleText", json!({ "content": text }))
         } else {
-            ("sampleMarkdown", json!({ "title": "Octop", "text": text }))
+            ("sampleMarkdown", json!({ "title": "Buddy", "text": text }))
         };
 
         let payload = json!({
@@ -328,7 +328,7 @@ impl Channel for DingTalkChannel {
         &mut self.core
     }
 
-    // Python DingTalkChannel does not override `_default_constraints`, so it
+    // DingTalkChannel does not override `_default_constraints`, so it
     // inherits the base `ChannelConstraints()` defaults.
     fn default_constraints() -> crate::constraints::ChannelConstraints {
         crate::constraints::ChannelConstraints::default()
@@ -336,7 +336,7 @@ impl Channel for DingTalkChannel {
 
     async fn start(&mut self) -> Result<()> {
         self.running.store(true, Ordering::SeqCst);
-        // Refresh token up-front (mirrors `await self._refresh_token()`).
+        // Refresh token up-front `).
         let _ = self.refresh_token().await?;
 
         // Generate a new session ID for this stream connection.

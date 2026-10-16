@@ -1,5 +1,4 @@
 //! Platform constraints and rate limiting utilities.
-//! Mirrors `octop_gateway.constraints`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -173,7 +172,7 @@ impl RateLimiter {
 
 /// Manages reply timeout by signalling on a channel when the deadline nears.
 ///
-/// Mirrors `ReplyTimeoutGuard`. In the Rust port the guard does not call the
+/// Reply timeout guard. It does not call the channel directly
 /// channel directly (that would require capturing `&mut self` in a `'static`
 /// closure); instead it pushes a unit signal on `tx`, and the channel's
 /// processing loop consumes the signal and emits the placeholder itself.
@@ -214,7 +213,7 @@ impl Drop for ReplyTimeoutGuard {
 // ---------------------------------------------------------------------------
 
 /// Periodically signals during long processing so the channel can refresh its
-/// typing indicator. Mirrors `TypingKeepalive` (signal-based, see above).
+/// typing indicator (signal-based, see above).
 pub struct TypingKeepalive {
     task: Option<tokio::task::JoinHandle<()>>,
 }

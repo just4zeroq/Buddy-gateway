@@ -1,6 +1,5 @@
 //! Example: Discord echo bot with a filesystem media backend.
 //!
-//! Mirrors `examples/discord_bot.py`.
 //!
 //! Run:
 //! ```text

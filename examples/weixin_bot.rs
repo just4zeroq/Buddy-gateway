@@ -1,6 +1,5 @@
 //! 微信 (WeChat iLink) AI Bot 示例 — 打字保活 + 占位符超时.
 //!
-//! Mirrors `examples/weixin_bot.py`.
 //!
 //! Run:
 //! ```text

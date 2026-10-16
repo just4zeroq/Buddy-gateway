@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 //! QQ (腾讯QQ 频道/群/私聊机器人) channel.
 //!
-//! Faithful 1:1 Rust port of `octop_gateway.channels.qq`. All Python submodules
-//! (`stream.py`, `stream_blocks.py`, `login_qr.py`) are inlined below as `mod`
-//! blocks so the whole adapter lives in one file.
+//! The streaming helpers and the QR-login flow live in inlined `mod` blocks
+//! (`stream`, `stream_blocks`, `login_qr`) so the whole adapter lives in one file.
 //!
 //! Implements: OAuth2 app access token (`bots.qq.com/app/getAppAccessToken`),
 //! gateway URL (`/gateway/bot`), a WebSocket gateway loop (op10 HELLO / op2
@@ -58,7 +57,7 @@ const DEFAULT_INTENTS: i64 = (1 << 30) | (1 << 1) | (1 << 12) | (1 << 25);
 const C2C_STREAM_HOLD: &str = "\n";
 
 // ---------------------------------------------------------------------------
-// Regexes (module-scope, matching Python's compiled patterns)
+// Regexes (module-scope, matching compiled patterns)
 // ---------------------------------------------------------------------------
 
 static MEDIA_TAG_RE: Lazy<Regex> = Lazy::new(|| {
@@ -122,7 +121,7 @@ pub fn strip_think_tags(text: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// JSON helpers mirroring Python truthiness / str() coercions
+// JSON helpers for truthiness / string coercions
 // ---------------------------------------------------------------------------
 
 fn jget<'a>(v: &'a Value, k: &str) -> Option<&'a Value> {
@@ -153,7 +152,7 @@ fn value_str(x: &Value) -> String {
     }
 }
 
-/// Mirrors Python `str(x or "")`.
+/// String coercion: empty / null -> "".
 fn jstr(v: Option<&Value>) -> String {
     match v {
         None => String::new(),
@@ -167,7 +166,7 @@ fn jstr(v: Option<&Value>) -> String {
     }
 }
 
-/// First truthy value coerced to string (mirrors a Python `a or b or ""` chain).
+/// First truthy value coerced to string.
 fn first_str(vals: &[Option<&Value>]) -> String {
     for v in vals {
         if truthy(*v) {
@@ -190,7 +189,7 @@ fn meta_nonempty(meta: &HashMap<String, Value>, k: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Module-level msg_seq counter (per msg_id), mirroring Python `_msg_seq`.
+// Module-level msg_seq counter (per msg_id).
 // QQ API requires incrementing msg_seq to avoid deduplication (error 40054005).
 // ---------------------------------------------------------------------------
 
@@ -226,7 +225,7 @@ fn get_next_msg_seq(msg_id: &str) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Shared inbound-dedup cache (mirrors QQChannel._seen_message_ids LRU<1000>).
+// Shared inbound-dedup cache (LRU, max 1000 entries).
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Default)]
@@ -696,7 +695,7 @@ fn classify_msg_type(event_type: &str) -> &'static str {
     }
 }
 
-/// Parse an ISO-8601 timestamp into epoch seconds (mirrors Python `fromisoformat`).
+/// Parse an ISO-8601 timestamp into epoch seconds.
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -770,7 +769,7 @@ fn is_image_url(url: &str, filename: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming helpers (mirror the pipeline-side closures in `_process_inbound`)
+// Streaming helpers
 // ---------------------------------------------------------------------------
 
 fn full_text(parts: &[String]) -> String {
@@ -949,7 +948,7 @@ async fn qq_input_notify(transport: &QqTransport, subject: &ChannelSubject) -> R
 }
 
 // ---------------------------------------------------------------------------
-// Base pipeline (mirrors the provided `Channel::process_inbound`)
+// Base pipeline (the provided `Channel::process_inbound`)
 // ---------------------------------------------------------------------------
 
 async fn base_process_inbound<C: Channel>(
@@ -1991,7 +1990,7 @@ impl Channel for QQChannel {
         if self.config.app_id.is_empty() {
             return Err(GatewayError::Other("QQChannel: app_id is required".into()));
         }
-        // Python has no core-level connection session; the ws session id is the
+        // has no core-level connection session; the ws session id is the
         // channel session and falls back to "qq-unconnected".
         self.core
             .set_connection_session(Some("qq-unconnected".to_string()));

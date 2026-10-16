@@ -1,13 +1,12 @@
 //! Discord channel.
 //!
-//! Mirrors `octop_gateway.channels.discord`. The Python SDK (`discord.py`) is
-//! replaced by a direct implementation of:
-//!   - the Discord Gateway WebSocket protocol (`GET …/gateway/bot`, IDENTIFY,
-//!     heartbeat, RESUME, reconnects) driven by `tokio-tungstenite`, and
-//!   - the Discord REST API (`discord.com/api/v10`) driven by `reqwest`
-//!     (outbound text, multipart attachments, typing indicator, media fetch).
+//! A direct implementation of the Discord protocol (no SDK dependency):
+//! - the Discord Gateway WebSocket protocol (`GET …/gateway/bot`, IDENTIFY,
+//! heartbeat, RESUME, reconnects) driven by `tokio-tungstenite`, and
+//! - the Discord REST API (`discord.com/api/v10`) driven by `reqwest`
+//! (outbound text, multipart attachments, typing indicator, media fetch).
 //!
-//! Behavior is kept 1:1 with the Python channel: the access whitelist, the
+//! Behavior: the access whitelist, the
 //! bot/webhook/message-type gate, message-id deduplication, mention handling,
 //! attachment mapping, the group-context mention gate, `split_discord_text`
 //! (UTF-16 aware, code-fence balanced), proxy-aware media download with a
@@ -16,7 +15,7 @@
 //! See the module-level NOTE in the final report about `ChannelCore::is_duplicate`
 //! (it requires `&mut self`, which a detached Gateway task cannot hold, so
 //! dedup uses the channel-local `DedupCache` in `fields` — the same 1000-entry
-//! LRU semantics as the Python `_seen` OrderedDict).
+//! LRU semantics as the `_seen` OrderedDict).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,17 +41,17 @@ use crate::models::{
 
 /// Discord REST + Gateway base.
 const DISCORD_API: &str = "https://discord.com/api/v10";
-/// Gateway transport (mirrors Python `discord.Client.start`) connect timeout.
+/// Gateway transport connect timeout.
 const CONNECT_TIMEOUT: f64 = 30.0;
-/// Hard cap for downloaded attachments (Python `_MAX_DOWNLOAD_BYTES`).
+/// Hard cap for downloaded attachments (`_MAX_DOWNLOAD_BYTES`).
 const MAX_DOWNLOAD_BYTES: u64 = 25 * 1024 * 1024;
 /// Discord per-message text budget (UTF-16 code units).
 const DISCORD_TEXT_LIMIT: usize = 2000;
-/// Python `_seen` OrderedDict capacity.
+/// `_seen` OrderedDict capacity.
 const DEDUP_MAX_SIZE: usize = 1000;
 
 /// Gateway intents bitmask: GUILDS(1) | GUILD_MESSAGES(512) | DIRECT_MESSAGES(4096)
-/// | MESSAGE_CONTENT(32768). Python sets `guilds`, `guild_messages`,
+/// | MESSAGE_CONTENT(32768). sets `guilds`, `guild_messages`,
 /// `dm_messages`, `message_content` on an otherwise-empty `Intents`.
 const DISCORD_INTENTS: i64 = 1 | 512 | 4096 | 32768;
 
@@ -63,7 +62,7 @@ const MESSAGE_TYPE_REPLY: i64 = 19;
 
 /// Discord channel configuration.
 ///
-/// Mirrors the Python `DiscordConfig` dataclass. `allow_all_channels` defaults to
+/// Configuration for the Discord channel. `allow_all_channels` defaults to
 /// `true` (guild channels are allowed by default); DM senders always require an
 /// entry in `allowed_user_ids`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +90,7 @@ impl Default for DiscordConfig {
     fn default() -> Self {
         DiscordConfig {
             base: ChannelConfig {
-                // Python default: enabled=True, visibility="all", activation="mention".
+                // Default: enabled=True, visibility="all", activation="mention".
                 group_context: Some(GroupContextConfig {
                     enabled: true,
                     visibility: "all".to_string(),
@@ -125,15 +124,15 @@ crate::channel_adapter! {
 }
 
 // ---------------------------------------------------------------------------
-// Dedup cache (Python `DiscordChannel._seen`, an OrderedDict capped at 1000)
+// Dedup cache (`DiscordChannel._seen`, an OrderedDict capped at 1000)
 // ---------------------------------------------------------------------------
 
 /// Bounded LRU-ish set of message ids.
 ///
 /// NOTE: the shared `ChannelCore::is_duplicate` needs `&mut self`, and the
 /// Gateway dispatch runs in a detached `tokio` task that only holds `&self`.
-/// The Python channel likewise keeps its own `_seen` cache, so this preserves
-/// the exact Python semantics (capacity [`DEDUP_MAX_SIZE`]).
+/// The channel likewise keeps its own `_seen` cache, so this preserves
+/// the exact semantics (capacity [`DEDUP_MAX_SIZE`]).
 #[derive(Default)]
 struct DedupCache {
     order: VecDeque<String>,
@@ -143,7 +142,7 @@ struct DedupCache {
 impl DedupCache {
     fn is_duplicate(&mut self, id: &str) -> bool {
         if self.seen.contains(id) {
-            // Python moves the id to the end on re-seen; only the membership
+            // moves the id to the end on re-seen; only the membership
             // check affects behavior.
             return true;
         }
@@ -180,7 +179,7 @@ impl GatewayCtx {
         *self.runtime_error.lock().unwrap() = Some(code.to_string());
     }
 
-    /// Mirror Python `on_ready` / `on_resumed`.
+    /// Mark the connection as ready.
     fn mark_connected(&self) {
         *self.session.lock().unwrap() =
             Some(format!("discord-{}", uuid::Uuid::new_v4().simple()));
@@ -224,7 +223,7 @@ async fn resolve_gateway_url(http: &reqwest::Client, token: &str) -> std::result
         .ok_or_else(|| "discord_connection_failed".to_string())
 }
 
-/// Connect-and-run loop with exponential backoff, mirroring Python
+/// Connect-and-run loop with exponential backoff.
 /// `DiscordChannel._run_client` + `start()` readiness handshake.
 async fn run_gateway(ctx: GatewayCtx, handshake: oneshot::Sender<std::result::Result<(), String>>) {
     let mut handshake = Some(handshake);
@@ -238,7 +237,7 @@ async fn run_gateway(ctx: GatewayCtx, handshake: oneshot::Sender<std::result::Re
             Ok(u) => u,
             Err(code) => {
                 // Before the first READY this is a fatal probe error; after a
-                // successful connection it is retried (like discord.py reconnect).
+                // successful connection it is retried.
                 if handshake.is_some() {
                     ctx.set_error(&code);
                     if let Some(tx) = handshake.take() {
@@ -264,7 +263,7 @@ async fn run_gateway(ctx: GatewayCtx, handshake: oneshot::Sender<std::result::Re
         };
         let ws_url = format!("{url}{sep}v=10&encoding=json");
 
-        // 2. Connect (honoring `http_proxy`, mirroring discord.py's gateway).
+        // 2. Connect (honoring `http_proxy`).
         let connect_result: std::result::Result<_, String> = if ctx.config.http_proxy.is_empty() {
             tokio_tungstenite::connect_async(&ws_url)
                 .await
@@ -313,7 +312,7 @@ async fn run_gateway(ctx: GatewayCtx, handshake: oneshot::Sender<std::result::Re
             Outcome::Reconnect => {}
         }
 
-        // Disconnected: mirror Python `on_disconnect`.
+        // Disconnected.
         let was_ready = ctx.ready.swap(false, Ordering::SeqCst);
         *ctx.session.lock().unwrap() = None;
         if was_ready {
@@ -503,7 +502,7 @@ async fn run_session(
                                 tracing::info!("Discord gateway RESUMED");
                                 ctx.mark_connected();
                             }
-                            // Mirrors Python `DiscordChannel.on_message`.
+                            // Inbound message gate.
                             "MESSAGE_CREATE" => handle_dispatch(ctx, &d),
                             _ => {}
                         }
@@ -516,7 +515,7 @@ async fn run_session(
 }
 
 // ---------------------------------------------------------------------------
-// Access control / inbound parsing (mirrors Python `on_message` + `parse_inbound`)
+// Access control / inbound parsing
 // ---------------------------------------------------------------------------
 
 /// JSON id → `String`, tolerating numeric ids.
@@ -596,8 +595,8 @@ fn has_attachments(d: &Value) -> bool {
         .unwrap_or(false)
 }
 
-/// True when the bot's mention token appears in `text` (Python
-/// `re.search(rf"<@!?{bot.id}>", text)`).
+/// True when the bot's mention token appears in `text`.
+/// Matches `<@!?{bot_id}>`.
 fn bot_mentioned(bot_id: Option<&str>, text: &str) -> bool {
     match bot_id {
         Some(id) if !id.is_empty() => Regex::new(&format!(r"<@!?{}>", regex::escape(id)))
@@ -607,7 +606,7 @@ fn bot_mentioned(bot_id: Option<&str>, text: &str) -> bool {
     }
 }
 
-/// Strip bot mentions and trim (Python `re.sub(...).strip()`); no-op without a bot id.
+/// Strip bot mentions and trim (`re.sub(...).strip()`); no-op without a bot id.
 fn strip_bot_mention(bot_id: Option<&str>, text: &str) -> String {
     match bot_id {
         Some(id) if !id.is_empty() => Regex::new(&format!(r"<@!?{}>", regex::escape(id)))
@@ -617,7 +616,7 @@ fn strip_bot_mention(bot_id: Option<&str>, text: &str) -> String {
     }
 }
 
-/// The bot/webhook/type gate + access whitelist (Python `on_message` head).
+/// The bot/webhook/type gate + access whitelist (`on_message` head).
 fn gate_allows(config: &DiscordConfig, d: &Value) -> bool {
     // Bot-authored messages are ignored.
     if d.pointer("/author/bot")
@@ -703,7 +702,7 @@ fn attachment_part(att: &Value) -> Option<ContentPart> {
     }
     let filename = att.get("filename").and_then(|x| x.as_str()).unwrap_or("");
     let size = att.get("size").and_then(|x| x.as_u64());
-    // Python: attachment.content_type or mimetypes.guess_type(filename)[0] or octet-stream.
+    // attachment.content_type or mimetypes.guess_type(filename)[0] or octet-stream.
     let mime = att
         .get("content_type")
         .and_then(|x| x.as_str())
@@ -766,7 +765,7 @@ impl DiscordChannel {
                 .unwrap_or(false)
     }
 
-    /// Python `runtime_error`: `None` when connected, else the stored code.
+    /// `runtime_error`: `None` when connected, else the stored code.
     fn runtime_error_code(&self) -> String {
         if self.is_connected() {
             String::new()
@@ -783,7 +782,7 @@ impl DiscordChannel {
     ///
     /// The Gateway WebSocket honors the same proxy via
     /// [`crate::utils::ws_connect_proxied`] (an HTTP `CONNECT` tunnel), so the
-    /// proxy applies to both REST and the gateway, matching discord.py.
+    /// proxy applies to both REST and the gateway.
     fn build_http(&self) -> Result<reqwest::Client> {
         let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(60));
         if !self.config.http_proxy.is_empty() {
@@ -802,7 +801,7 @@ impl DiscordChannel {
         builder.build().map_err(GatewayError::Http)
     }
 
-    /// Resolve the outbound channel id from a subject (Python `_target`).
+    /// Resolve the outbound channel id from a subject (`_target`).
     async fn resolve_target(&self, subject: &ChannelSubject) -> Result<String> {
         if !self.is_connected() {
             return Err(GatewayError::Other(self.runtime_error_code()));
@@ -827,7 +826,7 @@ impl DiscordChannel {
             .unwrap_or_else(|| subject.subject_id.clone()))
     }
 
-    /// Open (or reuse) a DM channel with a user (Python `user.create_dm()`).
+    /// Open (or reuse) a DM channel with a user (`user.create_dm()`).
     async fn create_dm(&self, user_id: &str) -> Result<String> {
         let http = self.build_http()?;
         let url = format!("{DISCORD_API}/users/@me/channels");
@@ -848,7 +847,7 @@ impl DiscordChannel {
             .to_string())
     }
 
-    /// POST one text chunk, blocking all mentions (Python `AllowedMentions.none()`).
+    /// POST one text chunk, blocking all mentions (`AllowedMentions.none()`).
     async fn post_message(&self, channel_id: &str, content: &str) -> Result<()> {
         let http = self.build_http()?;
         let url = format!("{DISCORD_API}/channels/{channel_id}/messages");
@@ -866,11 +865,11 @@ impl DiscordChannel {
         Ok(())
     }
 
-    /// Upload attachment bytes to a channel (Python `target.send(file=...)`).
+    /// Upload attachment bytes to a channel (`target.send(file=...)`).
     async fn try_send_media(&self, subject: &ChannelSubject, media: &ContentPart) -> Result<()> {
         let (data, mime) = self.load_media_bytes(media).await?;
 
-        // Python: getattr(media, "filename", "") or getattr(media, "alt_text", "").
+        // getattr(media, "filename", "") or getattr(media, "alt_text", "").
         let mut filename = match media {
             ContentPart::File(f) => f.filename.clone(),
             ContentPart::Image(i) => i.alt_text.clone(),
@@ -916,7 +915,7 @@ impl DiscordChannel {
         Ok(())
     }
 
-    /// Best-effort typing trigger (Python `target.typing()`).
+    /// Best-effort typing trigger (`target.typing()`).
     async fn try_typing(&self, subject: &ChannelSubject) -> Result<()> {
         let target = self.resolve_target(subject).await?;
         let http = self.build_http()?;
@@ -934,20 +933,20 @@ impl DiscordChannel {
 }
 
 // ---------------------------------------------------------------------------
-// Text splitting (exact port of Python `split_discord_text`)
+// Text splitting (`split_discord_text`)
 // ---------------------------------------------------------------------------
 
-/// UTF-16 code-unit length (Python `len(value.encode("utf-16-le")) // 2`).
+/// UTF-16 code-unit length (`len(value.encode("utf-16-le")) // 2`).
 fn size_u16(value: &str) -> usize {
     value.encode_utf16().count()
 }
 
-/// Python `str.rstrip("\r\n")`.
+/// `str.rstrip("\r\n")`.
 fn rstrip_crlf(value: &str) -> &str {
     value.trim_end_matches(['\r', '\n'])
 }
 
-/// Python `str.splitlines(keepends=True)`.
+/// `str.splitlines(keepends=True)`.
 fn split_lines_keepends(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -982,7 +981,7 @@ fn split_lines_keepends(text: &str) -> Vec<String> {
 
 /// Split text on lines, closing/reopening code fences, budgeting UTF-16 units.
 ///
-/// Direct port of Python `split_discord_text`.
+/// Discord text splitter (exact semantics).
 fn split_discord_text(text: &str, limit: usize) -> Result<Vec<String>> {
     if limit < 32 {
         return Err(GatewayError::Other(
@@ -1133,7 +1132,7 @@ impl Channel for DiscordChannel {
         if self.is_connected() {
             return Ok(());
         }
-        // Mirror Python: tear down any previous client before (re)starting.
+        // Tear down any previous client before (re)starting.
         self.stop().await?;
         if self.config.bot_token.is_empty() {
             return Err(GatewayError::MissingCredentials {
@@ -1141,7 +1140,7 @@ impl Channel for DiscordChannel {
                 missing: vec!["bot_token".to_string()],
             });
         }
-        // Validate proxy config up-front (Python `_proxy_auth()` in `start`).
+        // Validate proxy config up-front (`_proxy_auth()` in `start`).
         let http = self.build_http()?;
 
         *self.runtime_error.lock().unwrap() = None;
@@ -1232,7 +1231,7 @@ impl Channel for DiscordChannel {
     }
 
     fn parse_inbound(&self, raw: &RawPayload) -> Result<InboundMessage> {
-        // Python returns an already-parsed InboundMessage unchanged.
+        // returns an already-parsed InboundMessage unchanged.
         if let RawPayload::Preparsed(m) = raw {
             return Ok(m.clone());
         }

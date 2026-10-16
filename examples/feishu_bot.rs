@@ -1,6 +1,5 @@
 //! 飞书 (Feishu/Lark) AI Bot 示例.
 //!
-//! Mirrors `examples/feishu_bot.py`.
 //!
 //! Run:
 //! ```text
@@ -20,7 +19,7 @@ use buddy_gateway::media::FileSystemMediaBackend;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     common::load_dotenv();
 
-    let media_backend = Arc::new(FileSystemMediaBackend::new("/tmp/octop-gateway/media"));
+    let media_backend = Arc::new(FileSystemMediaBackend::new("/tmp/buddy-gateway/media"));
 
     let mut manager = ChannelManager::new(Some(common::echo_processor()))
         .with_workers_per_channel(4)

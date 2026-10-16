@@ -1,5 +1,4 @@
 //! Shared group-conversation policy and recent-message buffering.
-//! Mirrors `octop_gateway.group_context`.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -373,7 +372,7 @@ impl GroupContextManager {
         (activation, false)
     }
 
-    /// Truthiness of the `bot_mentioned` flag (mirrors Python `bool(...)`).
+    /// Truthiness of the `bot_mentioned` flag.
     fn is_mentioned(message: &InboundMessage) -> bool {
         matches!(
             message.metadata.get("bot_mentioned"),

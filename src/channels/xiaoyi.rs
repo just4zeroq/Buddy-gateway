@@ -1,12 +1,12 @@
 //! Xiaoyi (小艺 / 华为 OpenClaw) channel: A2A protocol over dual WebSocket links.
 //!
-//! Mirrors `octop_gateway.channels.xiaoyi`. Two WebSocket links (primary +
+//! Two WebSocket links (primary +
 //! backup) are opened concurrently with AK/SK request-signature headers. Inbound
 //! `message/stream` JSON-RPC requests are turned into inbound payloads; outbound
 //! turns are delivered as A2A `artifact-update` frames (`agent_response`) with a
 //! final `status-update` frame.
 //!
-//! Submodules inlined from Python: `xiaoyi/auth.py`, `xiaoyi/constants.py`.
+//! Submodules inlined from `xiaoyi/auth.py`, `xiaoyi/constants.py`.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -133,7 +133,7 @@ crate::channel_adapter! {
 // Shared cross-task state
 // ---------------------------------------------------------------------------
 
-/// LRU-bounded dedup set of message ids (mirrors the Python `OrderedDict`).
+/// LRU-bounded dedup set of message ids.
 #[derive(Default)]
 struct Dedup {
     set: HashSet<String>,

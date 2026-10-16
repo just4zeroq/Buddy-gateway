@@ -17,7 +17,7 @@
 
 **buddy-gateway** is a multi-platform IM channel bridge with a unified message abstraction for AI agents and bots. It connects to mainstream IM platforms and normalizes every inbound message into one processing pipeline, so your agent logic is written **once** and runs across Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, and Discord.
 
-> Every channel ships with its real transport, inbound media parsing, outbound media upload, and platform-specific hooks behind one unified interface — see [`docs/PARITY.md`](docs/PARITY.md) for the per-channel coverage matrix.
+> Every channel ships with its real transport, inbound media parsing, outbound media upload, and platform-specific hooks behind one unified interface — see [`docs/CHANNELS.md`](docs/CHANNELS.md) for the per-channel coverage matrix.
 
 ## What is Buddy Gateway?
 
@@ -81,7 +81,7 @@ The gateway sits between your agent and the outside world. Each platform is impl
 | Telegram | `telegram` | HTTP long-polling | ✅ | ✅ |
 | Discord | `discord` | Gateway WebSocket + REST (proxy-aware) | ✅ | ✅ |
 
-Every channel is ported with its real long connection, inbound media parsing, outbound platform media upload, overridden hooks, config field aliases, and (where applicable) crypto/login submodules. See [`docs/PARITY.md`](docs/PARITY.md).
+Every channel ships with its real long connection, inbound media parsing, outbound platform media upload, overridden hooks, config field aliases, and (where applicable) crypto/login submodules. See [`docs/CHANNELS.md`](docs/CHANNELS.md).
 
 #### Unified message abstraction
 - `InboundMessage` carries the text, structured `ContentPart`s (text / image / video / audio / file), and a `ChannelSubject`.
@@ -328,7 +328,7 @@ cargo build --release       # optimized build
 
 ## Channel coverage
 
-Every channel ships its real transport, inbound media parsing, outbound media upload, overridden hooks, and config aliases. The per-channel matrix lives in [`docs/PARITY.md`](docs/PARITY.md); the design overview is in [`docs/DESIGN.md`](docs/DESIGN.md).
+Every channel ships its real transport, inbound media parsing, outbound media upload, overridden hooks, and config aliases. The per-channel matrix lives in [`docs/CHANNELS.md`](docs/CHANNELS.md); the design overview is in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## 🤝 Contributing
 

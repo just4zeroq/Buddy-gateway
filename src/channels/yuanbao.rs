@@ -1,19 +1,19 @@
 //! Yuanbao (元宝) channel over binary WebSocket.
 //!
-//! Faithful Rust port of `octop_gateway.channels.yuanbao` (`channel.py`,
-//! `protocol.py`, `utils.py`, `config.py`, `constants.py`). The channel:
+//! `protocol`, `utils` and `constants` are inlined as `mod` blocks below.
+//! The channel:
 //!
-//!   * signs a short-lived token (`POST /api/v5/robotLogic/sign-token`,
-//!     HMAC-SHA256 over `nonce+timestamp+app_key+app_secret`),
-//!   * opens a binary WebSocket (`wss://bot-wss.yuanbao.tencent.com/...`),
-//!   * auth-binds a hand-rolled protobuf `ConnMsg`,
-//!   * keeps the link alive with a ping loop and reconnects with backoff,
-//!   * decodes `inbound_message` push frames (TIM message elements),
-//!   * sends `send_c2c_message` / `send_group_message` protobuf frames and
-//!     heartbeats, uploading media to COS directly when required.
+//! * signs a short-lived token (`POST /api/v5/robotLogic/sign-token`,
+//! HMAC-SHA256 over `nonce+timestamp+app_key+app_secret`),
+//! * opens a binary WebSocket (`wss://bot-wss.yuanbao.tencent.com/...`),
+//! * auth-binds a hand-rolled protobuf `ConnMsg`,
+//! * keeps the link alive with a ping loop and reconnects with backoff,
+//! * decodes `inbound_message` push frames (TIM message elements),
+//! * sends `send_c2c_message` / `send_group_message` protobuf frames and
+//! heartbeats, uploading media to COS directly when required.
 //!
 //! Everything lives in this single file; `constants`, `utils` and `protocol`
-//! are inlined as private `mod` blocks mirroring the Python files of the same
+//! are inlined as private `mod` blocks for the same
 //! name.
 
 use std::collections::HashMap;
@@ -178,7 +178,7 @@ mod utils {
     }
 
     fn has_scheme(value: &str) -> bool {
-        // Python `urlparse(value).scheme` is non-empty.
+        // `urlparse(value).scheme` is non-empty.
         if let Some(idx) = value.find(':') {
             let scheme = &value[..idx];
             if scheme.is_empty() {
@@ -577,7 +577,7 @@ mod utils {
         format!("{head}...{tail}")
     }
 
-    /// Python `str(value)` for the subset of JSON values we emit.
+    /// `str(value)` for the subset of JSON values we emit.
     pub fn py_str(value: &Value) -> String {
         match value {
             Value::String(s) => s.clone(),
@@ -594,7 +594,7 @@ mod utils {
         }
     }
 
-    /// Python `int(value)` for encoding varint fields.
+    /// `int(value)` for encoding varint fields.
     pub fn py_int(value: &Value) -> i64 {
         match value {
             Value::Number(n) => n
@@ -618,7 +618,7 @@ mod utils {
         }
     }
 
-    /// Python truthiness.
+    /// truthiness.
     pub fn truthy(value: &Value) -> bool {
         match value {
             Value::Null => false,
@@ -1179,7 +1179,7 @@ mod protocol {
         (get_varint(&fields, 1) as i64, get_string(&fields, 2))
     }
 
-    /// Only used by tests / future encoders (kept for parity with `__all__`).
+    /// Only used by tests / future encoders (kept for completeness).
     #[allow(dead_code)]
     pub fn encode_msg_content_only(content: &Value) -> Vec<u8> {
         encode_msg_content(content)
@@ -1266,7 +1266,7 @@ impl Default for YuanbaoConfig {
     }
 }
 
-/// Python `sys.platform` approximation.
+/// `sys.platform` approximation.
 fn default_platform() -> &'static str {
     if cfg!(target_os = "windows") {
         "win32"
@@ -1344,7 +1344,7 @@ type WsSink = futures::stream::SplitSink<WsStream, Message>;
 type WsReader = futures::stream::SplitStream<WsStream>;
 
 /// State shared between the `Channel` methods (`&self`) and the background
-/// WebSocket tasks. Mirrors the Python channel's mutable instance fields.
+/// WebSocket tasks. Holds the channel's mutable shared state.
 struct Shared {
     config: YuanbaoConfig,
     http: reqwest::Client,
@@ -1685,7 +1685,6 @@ async fn request(
 
 fn fail_pending(shared: &Shared) {
     // Dropping the senders makes awaiting callers observe a closed channel,
-    // mirroring Python `_fail_pending`.
     shared
         .pending
         .lock()
@@ -2799,7 +2798,7 @@ async fn connect_once(shared: &Arc<Shared>, force_token: bool) -> Result<()> {
 async fn run_receive(shared: Arc<Shared>, mut reader: WsReader) {
     let interval_secs = shared.config.heartbeat_interval.max(0.001);
     let mut interval = tokio::time::interval(Duration::from_secs_f64(interval_secs));
-    // tokio fires the first tick immediately; consume it to match Python's
+    // tokio fires the first tick immediately; consume it to match the
     // "sleep first" ping loop.
     interval.tick().await;
 

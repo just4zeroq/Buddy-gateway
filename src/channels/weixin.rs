@@ -1,9 +1,8 @@
 #![allow(dead_code)]
 //! WeChat (iLink Bot) channel: HTTP long-poll based message receiving.
 //!
-//! Faithful 1:1 Rust port of `octop_gateway.channels.weixin`. All Python
-//! submodules (`api.py`, `media.py`, `text.py`, `types.py`, `login_qr.py`) are
-//! inlined below as `mod` blocks so the whole adapter lives in one file.
+//! The API client, media codec, text splitter, types and QR-login flow live in
+//! inlined `mod` blocks so the whole adapter lives in one file.
 //!
 //! Uses the WeChat iLink Bot API (`https://ilinkai.weixin.qq.com`) with:
 //! - HTTP long-poll for receiving messages (`getUpdates`)
@@ -32,7 +31,7 @@ use crate::models::{
 use crate::push_routing::{alias_subject_fields, WEIXIN_CONTEXT_TOKEN_KEY};
 
 // ---------------------------------------------------------------------------
-// Constants (mirror the Python module-level constants)
+// Constants
 // ---------------------------------------------------------------------------
 
 const API_BASE: &str = "https://ilinkai.weixin.qq.com";
@@ -68,12 +67,12 @@ const SESSION_PAUSE_S: f64 = 300.0;
 // Typing indicator status values. status=2 clears the WeChat "thinking" light.
 const TYPING_START: i64 = 1;
 const TYPING_STOP: i64 = 2;
-/// One placeholder bubble text (mirrors `_PLACEHOLDER_TEXT`).
+/// One placeholder bubble text.
 const PLACEHOLDER_TEXT: &str = "⏳ 思考中...";
 /// How long to wait for the thinking light before sending one placeholder bubble
-/// (mirrors `_PLACEHOLDER_WAIT_S`).
+///.
 const PLACEHOLDER_WAIT_S: f64 = 4.0;
-/// Thinking-light refresh interval (mirrors `_TYPING_KEEPALIVE_S`).
+/// Thinking-light refresh interval.
 const TYPING_KEEPALIVE_S: f64 = 5.0;
 /// Thinking-light calls must not hold up the answer.
 const TYPING_HTTP_TIMEOUT_S: f64 = 3.0;
@@ -82,11 +81,11 @@ const TYPING_HTTP_TIMEOUT_S: f64 = 3.0;
 type ContextTokenMap = HashMap<String, String>;
 
 /// Callback used to persist a refreshed context token.
-/// Mirrors Python `ContextTokenListener` — signature `(account_id, user_id, token, ms)`.
+/// `ContextTokenListener` — signature `(account_id, user_id, token, ms)`.
 pub type ContextTokenListener = Arc<dyn Fn(String, String, String, i64) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
-// Config (mirrors `WeixinAccountConfig` / `WeixinConfig`)
+// Config
 // ---------------------------------------------------------------------------
 
 /// Single WeChat iLink account configuration.
@@ -116,10 +115,10 @@ impl Default for WeixinAccountConfig {
 
 /// WeChat iLink channel configuration.
 ///
-/// Attributes mirror the Python dataclass:
-///   - `accounts`: one entry per bot account (`account_id` + `token`).
-///   - `media_dir`: local directory for media file storage.
-///   - `base`: embedded [`ChannelConfig`] (channel_id / tenant_id / display flags).
+/// Fields:
+/// - `accounts`: one entry per bot account (`account_id` + `token`).
+/// - `media_dir`: local directory for media file storage.
+/// - `base`: embedded [`ChannelConfig`] (channel_id / tenant_id / display flags).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WeixinConfig {
@@ -142,13 +141,13 @@ impl Default for WeixinConfig {
 impl WeixinConfig {
     /// Parse flat `{token, bot_uin}` or `accounts[]` config.
     ///
-    /// Faithful port of `WeixinConfig.from_dict`: lenient — tokenless / malformed
+    /// Lenient config parsing — tokenless / malformed
     /// account entries are skipped rather than raising, so completeness is
     /// reported uniformly via the `start()` credentials check.
     ///
     /// NOTE: the shared `build_channel` dispatcher drives construction through
-    /// `serde::Deserialize`, so this helper is API-parity only (used when a
-    /// caller wants the Python `from_dict` semantics directly).
+    /// `serde::Deserialize`, so this helper is a compatibility shim (used when a
+    /// caller wants the `from_dict` semantics directly).
     pub fn from_dict(data: &Value) -> WeixinConfig {
         let known = [
             "channel_id",
@@ -295,7 +294,7 @@ fn apply_base_field(cfg: &mut WeixinConfig, key: &str, v: &Value) {
 // ---------------------------------------------------------------------------
 
 /// Cloneable handle to the shared `account_id:user_id -> context_token` map.
-/// Mirrors Python `self._context_tokens` (shared between the poll loop, which
+/// `self._context_tokens` (shared between the poll loop, which
 /// writes refreshed tokens on dispatch, and the send path).
 #[derive(Clone)]
 struct ContextTokens(Arc<tokio::sync::Mutex<ContextTokenMap>>);
@@ -327,7 +326,7 @@ crate::channel_adapter! {
     /// Weixin (iLink Bot) channel.
     WeixinChannel, WeixinConfig, "weixin",
     // `accounts` is a `Vec`, so the macro's `required = [...]` (`.is_empty()` on
-    // String fields) can't express the Python `missing_credentials` check. The
+    // String fields) can't express the `missing_credentials` check. The
     // validation is performed inside `start()` instead (see the NOTE there).
     required = [],
     fields = {
@@ -858,20 +857,20 @@ impl WeixinChannel {
 
     /// Standard inbound pipeline extended with the weixin "turn" side-effects.
     ///
-    /// Faithful port of Python `WeixinChannel._process_inbound`, which wraps
+    /// Wraps
     /// `super()._process_inbound(...)` with a concurrent `_typing_loop` task and
     /// a one-shot `_placeholder_after` task, then runs `_finish_turn` in a
     /// `finally`. A concurrent task here cannot borrow `&mut self` at the same
     /// time as the pipeline, so the body of
     /// [`Channel::default_process_inbound_body`] is reproduced inline and its
     /// `tokio::select!` loop is extended with:
-    ///   - a typing-keepalive branch (`_typing_once(status=1)` every
-    ///     `_TYPING_KEEPALIVE_S`), and
-    ///   - a one-shot placeholder branch (`_PLACEHOLDER_WAIT_S` after which, if
-    ///     the thinking light never came on and nothing was sent, one
-    ///     `_PLACEHOLDER_TEXT` bubble is sent).
+    /// - a typing-keepalive branch (`_typing_once(status=1)` every
+    /// `_TYPING_KEEPALIVE_S`), and
+    /// - a one-shot placeholder branch (`_PLACEHOLDER_WAIT_S` after which, if
+    /// the thinking light never came on and nothing was sent, one
+    /// `_PLACEHOLDER_TEXT` bubble is sent).
     /// The `finally` typing stop (`_stop_typing` → `status=2`) runs after the
-    /// loop, mirroring `_finish_turn`.
+    /// loop.
     async fn process_inbound_with_turn(
         &mut self,
         message: &InboundMessage,
@@ -911,14 +910,14 @@ impl WeixinChannel {
         let mut placeholder_sent = false;
         let mut processing_succeeded = false;
 
-        // Weixin turn state (mirrors `_WeixinTurn`).
+        // Weixin turn state.
         //
-        // `typing_ok` mirrors `turn.typing_ok` — whether a status=1 ever landed.
+        // `typing_ok` — whether a status=1 ever landed.
         let mut typing_ok = false;
-        // `content_enqueued` mirrors `turn.content_enqueued` — whether the
+        // `content_enqueued` — whether the
         // pipeline has already sent anything to the user this turn.
         let mut content_enqueued = false;
-        // Mirrors the one-shot `_placeholder_after` task: armed until the wait
+        // One-shot placeholder task: armed until the wait
         // elapses (or the turn ends), then disarmed so it can never re-fire.
         let mut placeholder_armed = true;
 
@@ -933,11 +932,11 @@ impl WeixinChannel {
         };
 
         // One-shot placeholder timer (`_placeholder_after`'s sleep). Armed at
-        // turn start, like the Python task spawned before the pipeline runs.
+        // turn start, like the task spawned before the pipeline runs.
         let placeholder_sleep = tokio::time::sleep(Duration::from_secs_f64(PLACEHOLDER_WAIT_S));
         tokio::pin!(placeholder_sleep);
 
-        // Python `_typing_loop` runs its first `_typing_once(status=1)`
+        // `_typing_loop` runs its first `_typing_once(status=1)`
         // immediately (the task is spawned before the pipeline starts).
         if self.typing_once(subject, TYPING_START).await {
             typing_ok = true;
@@ -945,7 +944,7 @@ impl WeixinChannel {
 
         // Periodic refresh. The first tick is deferred one period so it does not
         // duplicate the immediate send above; afterwards it fires every
-        // `_TYPING_KEEPALIVE_S`, like the Python loop.
+        // `_TYPING_KEEPALIVE_S`, like the loop.
         let mut typing_interval = tokio::time::interval_at(
             tokio::time::Instant::now() + Duration::from_secs_f64(TYPING_KEEPALIVE_S),
             Duration::from_secs_f64(TYPING_KEEPALIVE_S),
@@ -1001,8 +1000,8 @@ impl WeixinChannel {
                                 MessageEventType::Completed => {
                                     // Terminal branch: the turn is over, so the
                                     // placeholder can never fire again and
-                                    // `content_enqueued` is moot here (in Python
-                                    // `_finish_turn` cancels the placeholder task).
+                                    // `content_enqueued` is moot here (the turn
+                                    // is over and the placeholder task is cancelled).
                                     cancel_guards(&mut timeout_guard, &mut typing_keepalive);
                                     if !thinking_buffer.is_empty() {
                                         let t = std::mem::take(&mut thinking_buffer);
@@ -1060,13 +1059,13 @@ impl WeixinChannel {
                     let _ = self.send_typing_indicator(subject).await;
                 }
                 _ = typing_interval.tick() => {
-                    // Mirrors the next `_typing_loop` iteration.
+                    // Next typing-loop iteration.
                     if self.typing_once(subject, TYPING_START).await {
                         typing_ok = true;
                     }
                 }
                 _ = &mut placeholder_sleep, if placeholder_armed => {
-                    // Mirrors `_placeholder_after`: one bubble, only if the
+                    // One bubble, only if the
                     // thinking light never came on and nothing was sent yet.
                     placeholder_armed = false;
                     if !content_enqueued && !typing_ok {
@@ -1077,7 +1076,7 @@ impl WeixinChannel {
             }
         }
 
-        // `finally` semantics (mirrors `_finish_turn` → `_stop_typing`): clear
+        // `finally` semantics : clear
         // the thinking light, but only if a status=1 was actually delivered.
         // `_stop_typing` attempts status=2 and retries once on failure.
         if typing_ok {
@@ -1210,10 +1209,10 @@ impl Channel for WeixinChannel {
         }
     }
 
-    // NOTE: Python validates `accounts` via `WeixinConfig.missing_credentials`
+    // NOTE: validates `accounts` via `WeixinConfig.missing_credentials`
     // and raises `ChannelCredentialsError("weixin", missing or ["token"])` when
     // no poll task is started. Because `accounts` is a `Vec`, the macro's
-    // `required = [...]` machinery can't check it, so the Python semantics are
+    // `required = [...]` machinery can't check it, so the semantics are
     // reproduced here: each account must carry account_id / token / base_url.
     async fn start(&mut self) -> Result<()> {
         self.running.store(true, Ordering::SeqCst);
@@ -1294,7 +1293,7 @@ impl Channel for WeixinChannel {
     /// Overrides the default pipeline to add the weixin thinking-light and
     /// one-shot placeholder bubble around the standard processing loop.
     ///
-    /// Mirrors Python `WeixinChannel._process_inbound` (which delegates to
+    /// `WeixinChannel._process_inbound` (which delegates to
     /// `super()._process_inbound` while its typing/placeholder tasks run). The
     /// standard body is reproduced in [`Self::process_inbound_with_turn`]
     /// because the concurrent tasks it needs cannot share `&mut self`.
@@ -1526,7 +1525,7 @@ impl Channel for WeixinChannel {
 }
 
 // ---------------------------------------------------------------------------
-// Poll loop + dispatch (free fns, mirror `_poll_loop` / `_dispatch_message`)
+// Poll loop + dispatch
 // ---------------------------------------------------------------------------
 
 async fn poll_loop(
@@ -1638,7 +1637,7 @@ async fn dispatch_message(
 }
 
 // ---------------------------------------------------------------------------
-// Small helpers (mirror the Python static helpers)
+// Small helpers
 // ---------------------------------------------------------------------------
 
 const NULL_VALUE: Value = Value::Null;
@@ -1656,7 +1655,7 @@ fn to_camel(snake: &str) -> String {
     out
 }
 
-/// Port of `_item_payload`: read `snake_name`, else the camelCase alias.
+/// Read `snake_name`, else the camelCase alias.
 fn item_payload<'a>(item: &'a Value, snake_name: &str) -> &'a Value {
     let camel = to_camel(snake_name);
     item.get(snake_name)
@@ -1664,7 +1663,7 @@ fn item_payload<'a>(item: &'a Value, snake_name: &str) -> &'a Value {
         .unwrap_or(&NULL_VALUE)
 }
 
-/// Port of `_cdn_media`: normalize the CDN media descriptor.
+/// Normalize the CDN media descriptor.
 fn cdn_media(media: Option<&Value>) -> Option<Value> {
     let m = media.and_then(|v| v.as_object())?;
     let encrypt_query_param = m
@@ -1692,7 +1691,7 @@ fn cdn_media(media: Option<&Value>) -> Option<Value> {
     }))
 }
 
-/// Port of `_cdn_marker`: encode the CDN descriptor into a `local_path` marker.
+/// Encode the CDN descriptor into a `local_path` marker.
 fn cdn_marker(media: &Value, aeskey: &str, kind: &str, filename: &str) -> String {
     let payload = json!({
         "media": media,
@@ -1703,7 +1702,7 @@ fn cdn_marker(media: &Value, aeskey: &str, kind: &str, filename: &str) -> String
     format!("{CDN_MARKER_PREFIX}{payload}")
 }
 
-/// Port of `_inbound_filename` (`Path(raw_name).name` + magic-byte extension).
+/// Resolve an inbound filename (basename + magic-byte extension).
 fn inbound_filename(part: &ContentPart, info: &Value, data: &[u8], index: usize) -> String {
     let mut raw_name = String::new();
     if let ContentPart::File(f) = part {
@@ -1753,7 +1752,7 @@ fn value_to_string(v: &Value) -> String {
 }
 
 fn short(s: &str) -> &str {
-    // Python logs `user_id[:12]`; slicing a UTF-8 &str there is unsafe, so log
+    // logs `user_id[:12]`; slicing a UTF-8 &str there is unsafe, so log
     // the whole id (it is an opaque handle, never a secret).
     let _ = s;
     s
@@ -1836,7 +1835,7 @@ pub mod text {
     pub const WEIXIN_TEXT_LIMIT: usize = 2000;
 
     /// Split *text* on paragraph, line, then space boundaries.
-    /// Faithful port of `split_weixin_text` (character-indexed, not byte-indexed).
+    /// Split text (character-indexed, not byte-indexed).
     pub fn split_weixin_text(text: &str) -> Vec<String> {
         split_weixin_text_limit(text, WEIXIN_TEXT_LIMIT)
     }
@@ -1880,7 +1879,7 @@ pub mod text {
         parts
     }
 
-    /// Last index at which `needle` occurs in `hay` (mirrors Python `rfind`).
+    /// Last index at which `needle` occurs in `hay`.
     fn rfind_chars(hay: &[char], needle: &[char]) -> Option<usize> {
         if needle.is_empty() || hay.len() < needle.len() {
             return None;
@@ -2090,7 +2089,7 @@ pub mod media {
         raw_size + (16 - raw_size % 16)
     }
 
-    /// Detect a file extension from magic bytes (mirrors `detect_extension`).
+    /// Detect a file extension from magic bytes.
     pub fn detect_extension(data: &[u8]) -> &'static str {
         let header: &[u8] = if data.len() >= 32 { &data[..32] } else { data };
         for &(magic, ext) in MAGIC_TABLE {
@@ -2188,7 +2187,7 @@ pub mod media {
         }
     }
 
-    /// Download and AES-ECB decrypt CDN media (mirrors `download_and_decrypt`).
+    /// Download and AES-ECB decrypt CDN media.
     pub async fn download_and_decrypt(
         http: &reqwest::Client,
         cdn_media: &Value,

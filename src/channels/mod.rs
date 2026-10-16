@@ -2,10 +2,10 @@
 //!
 //! Each submodule implements the [`crate::channel::Channel`] contract for one
 //! IM platform. This module provides:
-//!   - [`ChannelKind`] — canonical channel kinds (mirrors the Python enum).
-//!   - [`build_channel`] — the JSON-driven construction dispatcher.
-//!   - the `channel_adapter!` macro that generates the repetitive struct /
-//!     `new` / `ChannelConfigLike` scaffolding for every adapter.
+//! - [`ChannelKind`] — canonical channel kinds.
+//! - [`build_channel`] — the JSON-driven construction dispatcher.
+//! - the `channel_adapter!` macro that generates the repetitive struct /
+//! `new` / `ChannelConfigLike` scaffolding for every adapter.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -26,7 +26,7 @@ pub mod xiaoyi;
 pub mod yuanbao;
 
 // ===========================================================================
-// Canonical channel kinds (parity with Python ChannelKind / _CHANNEL_MAP).
+// Canonical channel kinds.
 // ===========================================================================
 
 /// Built-in channel kinds that [`build_channel`] can construct.
@@ -89,11 +89,11 @@ pub const SUPPORTED_CHANNEL_KINDS: &[&str] = &[
 // DRY scaffolding macro.
 //
 // Generates, for a platform adapter:
-//   - the channel struct holding a `ChannelCore` + the platform `Config`;
-//   - `new(processor, config, channel_id, tenant_id, debounce_seconds)` which
-//     resolves a concrete channel id (config > arg > random uuid), applies the
-//     config's display flags to the constraints, and stamps the channel type;
-//   - the `ChannelConfigLike` impl (base accessor, required creds, missing creds).
+// - the channel struct holding a `ChannelCore` + the platform `Config`;
+// - `new(processor, config, channel_id, tenant_id, debounce_seconds)` which
+// resolves a concrete channel id (config > arg > random uuid), applies the
+// config's display flags to the constraints, and stamps the channel type;
+// - the `ChannelConfigLike` impl (base accessor, required creds, missing creds).
 //
 // The concrete `impl Channel` (start/stop/send_*/parse_inbound) is written per
 // platform because those are the platform-specific bits.
@@ -147,7 +147,7 @@ macro_rules! channel_adapter {
                     $($fname: ::std::default::Default::default(),)*
                 };
                 {
-                    // Python `_default_constraints(self)` may read the config
+                    // `_default_constraints(self)` may read the config
                     // (e.g. Telegram's typing keepalive depends on show_typing).
                     let mut c = chan.core().constraints().clone();
                     chan.configure_constraints(&mut c);
@@ -187,10 +187,10 @@ macro_rules! channel_adapter {
 }
 
 // ===========================================================================
-// JSON-driven construction dispatcher (mirrors Python `_load_channel`).
+// JSON-driven construction dispatcher.
 // ===========================================================================
 
-/// Field aliases per channel kind, mirroring the Python `field_aliases`.
+/// Field aliases per channel kind.
 /// Applied only when the canonical key is absent.
 fn aliases_for(channel_type: &str) -> &'static [(&'static str, &'static str)] {
     match channel_type {
@@ -220,7 +220,7 @@ fn aliases_for(channel_type: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// Python-truthiness for a JSON value (used for `c2c_streaming` / `enabled`).
+/// Truthiness for a JSON value (used for `c2c_streaming` / `enabled`).
 fn as_bool_like(v: &Value) -> Option<bool> {
     match v {
         Value::Bool(b) => Some(*b),
@@ -235,7 +235,7 @@ fn as_bool_like(v: &Value) -> Option<bool> {
 }
 
 /// Split a comma/whitespace-delimited ID string (or list) into a validated,
-/// de-duplicated list of ASCII-digit IDs. Mirrors Discord/Telegram `from_dict`
+/// De-duplicated list of ASCII-digit IDs, parsed leniently from `from_dict`-style
 /// (`re.split(r"[,\s]+", ...)` + `str(item).isascii() and isdigit()` + dedup).
 /// Returns `None` when validation fails (caller keeps the original value so the
 /// typed deserializer surfaces the error).
@@ -273,10 +273,10 @@ fn split_ids(value: &Value) -> Option<Value> {
     Some(Value::Array(out))
 }
 
-/// Per-channel config coercions mirroring the Python `from_dict` overrides.
+/// Per-channel config coercions.
 fn coerce_config(channel_type: &str, obj: &mut serde_json::Map<String, Value>) {
     // group_context: coerce numeric/bool strings so serde can deserialize
-    // (Python `from_dict` does int(str(..)) / bool(..)).
+    // (`from_dict` does int(str(..)) / bool(..)).
     if let Some(Value::Object(gc)) = obj.get_mut("group_context") {
         if let Some(Some(n)) = gc.get("history_limit").and_then(|v| v.as_str()).map(|s| s.parse::<u64>().ok()) {
             gc.insert("history_limit".to_string(), Value::from(n));
@@ -316,7 +316,7 @@ fn coerce_config(channel_type: &str, obj: &mut serde_json::Map<String, Value>) {
         }
         "qq" => {
             // `c2c_streaming`: string/bool coercion; absent (or legacy
-            // `streaming`) defaults ON (mirrors QQConfig.from_dict).
+            // `streaming`) defaults ON.
             match obj.get("c2c_streaming").cloned() {
                 Some(v) => {
                     if let Some(b) = as_bool_like(&v) {
@@ -338,7 +338,7 @@ fn coerce_config(channel_type: &str, obj: &mut serde_json::Map<String, Value>) {
     }
 }
 
-/// Normalize a raw JSON config the way Python `ChannelConfig.from_dict` does:
+/// Normalize a raw JSON config the way `ChannelConfig.from_dict` does:
 /// apply field aliases (canonical wins), strip surrounding whitespace from
 /// string values, and run per-channel coercions. Unknown keys are ignored by
 /// `serde` automatically.
@@ -362,7 +362,7 @@ pub fn normalize_config(channel_type: &str, config: &Value) -> Value {
     v
 }
 
-/// Fail fast when required credentials are missing (mirrors `missing_credentials`).
+/// Fail fast when required credentials are missing.
 fn ensure_credentials<C: crate::channel::ChannelConfigLike>(
     kind: &str,
     cfg: &C,
@@ -381,7 +381,7 @@ fn ensure_credentials<C: crate::channel::ChannelConfigLike>(
 /// Build a channel object from a kind string + JSON config.
 ///
 /// `channel_id` / `tenant_id` supplied here override the values embedded in the
-/// config (consistent with the Python manager: explicit > config > generated).
+/// config (consistent with the manager: explicit > config > generated).
 /// The config is normalized (aliases + string stripping) and its required
 /// credentials are validated before construction.
 pub fn build_channel(

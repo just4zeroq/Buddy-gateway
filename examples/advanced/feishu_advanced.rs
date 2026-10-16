@@ -1,6 +1,5 @@
 //! 飞书 Bot 高级示例：命令处理 (`/help`) + 多模态.
 //!
-//! Mirrors `examples/advanced/feishu_advanced.py`.
 //!
 //! Run:
 //! ```text

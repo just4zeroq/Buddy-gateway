@@ -1,27 +1,27 @@
 //! Feishu (Lark) channel.
 //!
-//! Mirrors `octop_gateway.channels.feishu`. Connects to Feishu with a
+//! Connects to Feishu with a
 //! WebSocket long connection for receiving messages and the REST API
 //! (`open.feishu.cn/open-apis`) for sending. Supports text, images and file
 //! messages in both DM and group chats.
 //!
-//! Ported pieces:
-//!   - tenant_access_token lifecycle (cached with expiry + a refresh margin),
-//!   - bot `open_id` resolution (`/bot/v3/info`) for group @mention detection,
-//!   - a WebSocket client (endpoint discovery + hello + ping/pong + event
-//!     dispatch) with reconnect backoff and an unhealthy-state watchdog,
-//!   - `im.message.receive_v1` handling (bot-skip, bounded dedup, typing
-//!     reaction ack, raw payload enqueue),
-//!   - `parse_inbound` for text/image/file/audio/sticker/post/interactive,
-//!   - outbound `post` (markdown) / `image` / `file` messages, thread replies,
-//!     media upload, `fetch_remote_media` (Bearer auth) and
-//!     `enrich_push_metadata` (`to_handle`).
+//! Components:
+//! - tenant_access_token lifecycle (cached with expiry + a refresh margin),
+//! - bot `open_id` resolution (`/bot/v3/info`) for group @mention detection,
+//! - a WebSocket client (endpoint discovery + hello + ping/pong + event
+//! dispatch) with reconnect backoff and an unhealthy-state watchdog,
+//! - `im.message.receive_v1` handling (bot-skip, bounded dedup, typing
+//! reaction ack, raw payload enqueue),
+//! - `parse_inbound` for text/image/file/audio/sticker/post/interactive,
+//! - outbound `post` (markdown) / `image` / `file` messages, thread replies,
+//! media upload, `fetch_remote_media` (Bearer auth) and
+//! `enrich_push_metadata` (`to_handle`).
 //!
 //! NOTE (fidelity): the real lark-oapi WebSocket transport exchanges protobuf
 //! frames; this port has no protobuf dependency so it uses the documented
 //! endpoint discovery plus JSON hello/ping/pong/event frames. The receive-side
 //! event JSON is structurally identical to the webhook `im.message.receive_v1`
-//! payload, so all event parsing/reaction/dedup logic is a faithful port.
+//! payload, so all event parsing/reaction/dedup logic lives here.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,7 +45,7 @@ use crate::models::{
 use crate::push_routing::alias_subject_fields;
 
 // ---------------------------------------------------------------------------
-// Constants (mirror the Python module-level values)
+// Constants
 // ---------------------------------------------------------------------------
 
 /// Feishu OpenAPI base URL.
@@ -97,11 +97,11 @@ struct TokenState {
     expires_at: f64,
 }
 
-/// Bounded LRU-ish dedup set for message ids (Python `_seen_message_ids`).
+/// Bounded LRU-ish dedup set for message ids (`_seen_message_ids`).
 ///
 /// NOTE: the shared `ChannelCore::is_duplicate` is capped at 1000 entries and
 /// lives behind `&mut self`, which a detached WebSocket task cannot hold. The
-/// Python Feishu channel keeps its own 2000-entry cache, so this port keeps an
+/// Feishu channel keeps its own 2000-entry cache, so this port keeps an
 /// equivalent dedicated cache (capacity [`DEDUP_MAX_SIZE`]) in `fields`.
 #[derive(Default)]
 struct DedupCache {
@@ -126,7 +126,7 @@ impl DedupCache {
     }
 }
 
-/// Transport health, mirroring the Python `_ws_*` bookkeeping fields.
+/// Transport health / connection bookkeeping.
 #[derive(Default)]
 struct WsHealth {
     /// Last observed activity (unix millis; 0 = never).
@@ -660,14 +660,14 @@ impl Channel for FeishuChannel {
         &mut self.core
     }
 
-    /// Feishu inherits the base defaults (Python does not override
+    /// Feishu inherits the base defaults (does not override
     /// `_default_constraints`).
     fn default_constraints() -> crate::constraints::ChannelConstraints {
         crate::constraints::ChannelConstraints::default()
     }
 
     async fn start(&mut self) -> Result<()> {
-        // 1) Obtain the tenant_access_token (propagates on failure, like Python).
+        // 1) Obtain the tenant_access_token (propagates on failure).
         let http = self.core.ensure_http().await?;
         refresh_token_core(
             &self.config.app_id,
@@ -729,7 +729,7 @@ impl Channel for FeishuChannel {
         self.running.store(false, Ordering::Relaxed);
         // Cancel the watchdog first, then drop the WS supervisor (dropping its
         // future closes the socket). Rust's `select!` restart path guarantees a
-        // single live connection, so the Python orphan-thread guard
+        // single live connection, so the orphan-thread guard
         // (EXCEED_CONN_LIMIT) is unnecessary here.
         if let Some(t) = self.watchdog_task.take() {
             t.abort();
@@ -1256,7 +1256,7 @@ async fn handle_message_event(v: &Value, ctx: &WsCtx) {
             tracing::info!("Feishu message enqueued: {message_id}");
         }
         None => {
-            // Python falls back to dispatching through the main event loop; the
+            // falls back to dispatching through the main event loop; the
             // Rust worker pipeline always installs an enqueue callback, so
             // without one there is no `&mut self` to dispatch through.
             tracing::error!("Feishu: no enqueue callback, message DROPPED: {message_id}");
@@ -1266,7 +1266,7 @@ async fn handle_message_event(v: &Value, ctx: &WsCtx) {
 
 /// Add an emoji reaction to a message via API (fire-and-forget).
 ///
-/// Mirrors Python: token from the shared refresh path, POST over a fresh client.
+/// Token from the shared refresh path, POSTed over a fresh client.
 async fn add_reaction(
     message_id: String,
     emoji_type: String,

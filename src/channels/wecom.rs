@@ -1,26 +1,25 @@
 //! WeCom (企业微信) AI-bot channel.
 //!
-//! Mirrors `octop_gateway.channels.wecom`. Connects to the WeCom AI-bot
-//! WebSocket (`wecom-aibot-sdk` in Python) for bidirectional messaging with no
+//! Connects to the WeCom AI-bot WebSocket for bidirectional messaging with no
 //! public URL, supports streamed replies (thinking bubble + progressive output)
 //! and encrypted media transfer.
 //!
-//! The Python channel overrides `handle_inbound` to stream deltas through the
+//! This channel overrides `handle_inbound` to stream deltas through the
 //! SDK's `reply_stream` (finish=False) and it overrides `_persist_media` to
 //! decrypt media with the per-message `aeskey`. Both provided trait methods are
 //! overridden here as well — Rust permits overriding trait methods that have a
-//! default body, which is the closest 1:1 reproduction of the Python design.
+//! default body.
 //!
 //! NOTE (residual differences, all protocol-level):
-//!   * The Python `wecom-aibot-sdk` wire protocol is not published; the connect
-//!     (subscribe), heartbeat, message-callback, reply-stream, upload and
-//!     download frames implemented in [`mod ws_client`] reproduce the *shape*
-//!     documented by the SDK (`{"cmd", "headers": {"req_id"}, "body": {...}}`)
-//!     and the `_on_message` docstring, but exact field names may need tuning
-//!     against a live deployment.
-//!   * `metadata["_ws_client"]` (a live Python object) cannot be carried in a
-//!     `serde_json::Value`; the equivalent state lives on the channel itself
-//!     (`self.ws_tx` / `self.pending`), and `_frame` is carried as JSON.
+//! * The WeCom AI-bot wire protocol is not published; the connect
+//! (subscribe), heartbeat, message-callback, reply-stream, upload and
+//! download frames implemented in [`mod ws_client`] reproduce the *shape*
+//! documented by the SDK (`{"cmd", "headers": {"req_id"}, "body": {...}}`)
+//! and the `_on_message` docstring, but exact field names may need tuning
+//! against a live deployment.
+//! * `metadata["_ws_client"]` (a live connection object) cannot be carried in a
+//! `serde_json::Value`; the equivalent state lives on the channel itself
+//! (`self.ws_tx` / `self.pending`), and `_frame` is carried as JSON.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -242,7 +241,7 @@ impl WeComChannel {
     }
 
     // =======================================================================
-    // Streamed reply event handling (mirrors the Python `handle_inbound` body)
+    // Streamed reply event handling
     // =======================================================================
 
     #[allow(clippy::too_many_arguments)]
@@ -866,10 +865,10 @@ impl Channel for WeComChannel {
 
     /// Override: stream deltas progressively via WeCom `reply_stream`.
     ///
-    /// Mirrors the Python `WeComChannel.handle_inbound`. When no frame /
+    /// Streamed reply pipeline. When no frame /
     /// WebSocket is available it falls back to the shared base pipeline
     /// (`prepare_inbound` → `process_inbound` → `finalize_inbound`), exactly as
-    /// Python calls `super().handle_inbound(...)`.
+    /// calls `super().handle_inbound(...)`.
     async fn handle_inbound(&mut self, raw: &RawPayload) -> Result<()> {
         let mut message = self.parse_inbound(raw)?;
 
@@ -1067,7 +1066,7 @@ fn wecom_media_type_and_filename(media: &ContentPart) -> Result<(String, String)
     Ok((media_type.to_string(), filename))
 }
 
-/// Extensions mirroring Python `mimetypes.guess_extension` for common types.
+/// Extension lookup for common media types.
 fn guess_extension(mime: &str) -> Option<String> {
     let m = mime.split(';').next().unwrap_or("").trim().to_lowercase();
     let ext = match m.as_str() {
@@ -1111,7 +1110,7 @@ fn md5_short(s: &str) -> String {
     hex.chars().take(8).collect()
 }
 
-/// Storage-safe basename retaining Unicode (mirrors `_safe_media_filename`).
+/// Storage-safe basename retaining Unicode.
 fn safe_media_filename(filename: &str) -> String {
     let basename = filename.replace('\\', "/");
     let basename = basename.rsplit('/').next().unwrap_or("").to_string();
@@ -1126,8 +1125,6 @@ fn safe_media_filename(filename: &str) -> String {
         trimmed
     }
 }
-
-/// Mirrors Python `_resolve_media_filename`.
 fn resolve_media_filename(part: &ContentPart, index: usize, timestamp: u64) -> String {
     if let ContentPart::File(f) = part {
         if !f.filename.is_empty() {
@@ -1197,7 +1194,7 @@ mod ws_client {
     use tokio::sync::mpsc::UnboundedReceiver;
     use tokio_tungstenite::tungstenite::Message;
 
-    /// Infinite reconnect loop (Python `max_reconnect_attempts=-1`).
+    /// Infinite reconnect loop (`max_reconnect_attempts=-1`).
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn run(
         ws_url: String,

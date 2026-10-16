@@ -1,11 +1,11 @@
 //! Base channel abstraction, channel configuration, and the shared message pipeline.
 //!
-//! Mirrors `octop_gateway.channel`. The Python `BaseChannel` is split in Rust into:
-//!   - [`ChannelCore`] — shared state + (via helper fns) the pipeline mechanics
-//!   - [`Channel`]     — the platform contract (abstract + overridable methods) with
-//!     the shared pipeline implemented as provided trait methods.
+//! The base channel abstraction is split into two pieces:
+//! - [`ChannelCore`] — shared state + (via helper fns) the pipeline mechanics
+//! - [`Channel`] — the platform contract (abstract + overridable methods) with
+//! the shared pipeline implemented as provided trait methods.
 //!
-//! This reproduces the Python semantics: channels implement only platform logic; the
+//! This reproduces the semantics: channels implement only platform logic; the
 //! rest is inherited.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -64,7 +64,7 @@ pub trait ChannelConfigLike {
     fn required_credentials(&self) -> &'static [&'static str];
     /// Return the required fields that are currently empty.
     fn missing_credentials(&self) -> Vec<String>;
-    /// Field aliases as `(alias_key, canonical_key)` pairs. Mirrors Python
+    /// Field aliases as `(alias_key, canonical_key)` pairs.
     /// `ChannelConfig.field_aliases` (applied only when the canonical key is
     /// absent). Default: none.
     fn field_aliases(&self) -> &'static [(&'static str, &'static str)] {
@@ -162,7 +162,7 @@ impl ChannelCore {
     }
 
     /// Override the debounce window (used when a channel is constructed with a
-    /// non-zero `debounce_seconds`, mirroring the Python constructor kwarg).
+    /// non-zero `debounce_seconds`).
     pub fn set_debounce_seconds(&mut self, d: f64) {
         self.debounce_seconds = d;
     }
@@ -219,8 +219,8 @@ impl ChannelCore {
         &mut self.constraints
     }
 
-    /// Replace the constraints and rebuild the derived rate limiter. Mirrors the
-    /// derivation the Python base initializer performs from `_default_constraints()`.
+    /// Replace the constraints and rebuild the derived rate limiter
+    /// (same derivation as used at channel construction).
     pub fn apply_constraints(&mut self, constraints: ChannelConstraints) {
         self.rate_limiter = constraints
             .send_rate_limit
@@ -369,10 +369,10 @@ pub trait Channel: Send + Sync {
         Ok(())
     }
 
-    /// Platform default constraints, mirroring Python `BaseChannel._default_constraints`.
+    /// Platform default constraints.
     ///
     /// `new` starts from these and then applies the config's `show_thinking`
-    /// / `show_tool_hints` on top, exactly like the Python base initializer.
+    /// / `show_tool_hints` on top, exactly like the base initializer.
     fn default_constraints() -> ChannelConstraints
     where
         Self: Sized,
@@ -380,7 +380,7 @@ pub trait Channel: Send + Sync {
         ChannelConstraints::default()
     }
 
-    /// Config-dependent constraint adjustments, mirroring Python channels whose
+    /// Config-dependent constraint adjustments, for channels whose
     /// `_default_constraints(self)` reads `self._config` (e.g. Telegram's
     /// `typing_keepalive_interval = 4.0 if self._config.show_typing else 0.0`).
     ///
@@ -430,7 +430,7 @@ pub trait Channel: Send + Sync {
         self.core().constraints()
     }
 
-    /// Apply runtime constraint overrides (mirrors `ChannelManager.set_constraints`).
+    /// Apply runtime constraint overrides.
     fn set_constraints(&mut self, overrides: &HashMap<String, serde_json::Value>) {
         let mut new_limiter: Option<Option<RateLimiter>> = None;
         {
@@ -677,7 +677,7 @@ pub trait Channel: Send + Sync {
             Some(url) if !url.is_empty() => {
                 let (raw, mime) = self.fetch_remote_media(url).await?;
                 // Cache the fetched bytes into the backend so subsequent reads
-                // are local (mirrors Python `load_media_bytes` URL caching).
+                // are local.
                 if let Some(backend) = self.core().media_backend() {
                     let key = derive_storage_key(self.core().channel_type(), part, &mime);
                     if let Err(e) = backend.save(&raw, &key).await {
@@ -813,7 +813,7 @@ pub trait Channel: Send + Sync {
     /// Default inbound pipeline (delta accumulation, thinking, timeout
     /// placeholder, typing keepalive). Overridable; channels that override it can
     /// still run the standard behavior via [`Channel::default_process_inbound_body`]
-    /// (mirrors Python `await super()._process_inbound(...)`).
+    ///._process_inbound(...)`).
     async fn process_inbound(&mut self, message: &InboundMessage, subject: &ChannelSubject) -> bool {
         self.default_process_inbound_body(message, subject).await
     }
@@ -1142,7 +1142,7 @@ fn safe_media_filename(filename: &str, fallback: &str) -> String {
 
 fn md5_short(s: &str) -> String {
     // Small dependency-free FNV-ish hash is overkill; use a truncated hex of the
-    // bytes via std. We approximate the Python md5 short with a 8-char slice of a
+    // bytes via std. We approximate the md5 short with a 8-char slice of a
     // simple djb2 hash for stable keys (collisions are acceptable for cache keys).
     let mut hash: u64 = 5381;
     for b in s.bytes() {
@@ -1185,7 +1185,7 @@ fn set_media_meta(part: &mut ContentPart, key: String, size: u64, mime: String) 
     }
 }
 
-/// Deterministic backend key for an outbound-cached part, mirroring Python
+/// Deterministic backend key for an outbound-cached part.
 /// `BaseChannel._derive_storage_key` (`{channel_type}/_outbound/{ts}_...`).
 fn derive_storage_key(channel_type: &str, part: &ContentPart, mime: &str) -> String {
     let ts = now_secs();

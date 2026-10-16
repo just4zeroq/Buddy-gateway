@@ -1,6 +1,5 @@
 //! Example: MQTT bot (e.g. EMQX Cloud TLS) for IoT devices.
 //!
-//! Mirrors `examples/mqtt_bot.py`.
 //!
 //! Run:
 //! ```text

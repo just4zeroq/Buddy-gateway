@@ -1,12 +1,11 @@
 //! QQ Bot 示例 — 真实 WebSocket 网关（收消息）+ OpenAPI（发消息）。
 //!
-//! Mirrors `examples/qq_bot.py`.
 //!
 //! 参数：
-//!   QQ_APP_ID  机器人 AppID
-//!   QQ_SECRET  机器人 AppSecret（若未设置则回退到 QQ_TOKEN）
-//!   QQ_TOKEN   机器人 Token（旧字段，作为 secret 的回退）
-//!   QQ_SANDBOX 是否用沙盒端点（默认 false）
+//! QQ_APP_ID 机器人 AppID
+//! QQ_SECRET 机器人 AppSecret（若未设置则回退到 QQ_TOKEN）
+//! QQ_TOKEN 机器人 Token（旧字段，作为 secret 的回退）
+//! QQ_SANDBOX 是否用沙盒端点（默认 false）
 //!
 //! Run:
 //! ```text

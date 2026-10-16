@@ -1,5 +1,4 @@
 //! Utility functions for content inspection, merging, and debouncing.
-//! Mirrors `octop_gateway.utils`.
 
 use crate::models::{ContentPart, ContentType, InboundMessage};
 use std::collections::HashMap;
@@ -83,7 +82,7 @@ pub struct Debouncer {
     callback: Arc<dyn Fn(String, Vec<serde_json::Value>) -> JoinHandle<()> + Send + Sync>,
 }
 
-// NOTE: The Python `Debouncer` operates on `Any` items and an async callback.
+// NOTE: The `Debouncer` operates on `Any` items and an async callback.
 // Here we keep the same semantics but type the items as `serde_json::Value`
 // (the common currency of raw payloads) and accept a spawned-task callback to
 // stay executor-friendly.
@@ -100,9 +99,9 @@ impl Debouncer {
 
     /// Add an item and (re)start its debounce timer.
     pub fn add(&self, key: String, item: serde_json::Value) {
-        // The Python design keeps per-key buffers + timers. For the Rust port we
+        // The design keeps per-key buffers + timers. For the Rust port we
         // spawn a one-shot delay that collects the latest item; a production
-        // version would merge a shared buffer. Kept simple to mirror the API.
+        // version would merge a shared buffer. Kept simple.
         let cb = self.callback.clone();
         let delay = self.delay;
         let _ = tokio::spawn(async move {
@@ -137,8 +136,8 @@ pub fn ensure_crypto_provider() {
 
 /// Open a WebSocket connection through an HTTP `CONNECT` proxy.
 ///
-/// Mirrors the proxy support of Python's `aiohttp` / `discord.py` gateway
-/// clients (which `tokio-tungstenite`'s `connect_async` lacks). Only the
+/// HTTP `CONNECT`-tunnel proxy support for gateway WebSocket clients. The
+/// helper performs the tunnel then runs TLS over it. Only the
 /// `http`/`https` URL schemes the OSS tool-chain uses are supported, since the
 /// proxy chain terminates the socket then relays TLS.
 pub async fn ws_connect_proxied(

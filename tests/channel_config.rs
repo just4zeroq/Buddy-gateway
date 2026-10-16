@@ -1,4 +1,4 @@
-//! Tests for channel config + kind mapping (mirrors tests/test_channel_config.py).
+//! Tests for channel config + kind mapping.
 
 use std::collections::HashSet;
 
@@ -200,7 +200,7 @@ fn build_channel_telegram_ok() {
 
 #[test]
 fn build_channel_loopback_is_not_a_kind() {
-    // Loopback is a test harness, not a buildable channel kind (matches Python's
+    // Loopback is a test harness, not a buildable channel kind (the registry's
     // _CHANNEL_MAP which excludes it).
     let proc = common::echo_processor("Reply");
     assert!(build_channel("loopback", &json!({}), proc, None, None).is_err());
@@ -214,7 +214,7 @@ fn build_channel_unknown_kind_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// normalize_config: Python `from_dict` parity (aliases, trim, coercions)
+// normalize_config: config normalization (aliases, trim, coercions)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -247,7 +247,7 @@ fn normalize_canonical_key_wins_over_alias() {
 
 #[test]
 fn normalize_qq_coerces_c2c_streaming() {
-    // Missing key → defaults on (mirrors QQConfig.from_dict).
+    // Missing key → defaults on.
     let n = normalize_config("qq", &json!({ "app_id": "1", "secret": "s" }));
     assert_eq!(n["c2c_streaming"], json!(true));
 

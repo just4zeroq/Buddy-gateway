@@ -1,6 +1,5 @@
 //! 定时主动推送示例 — 周期性向所有已知用户群发问候.
 //!
-//! Mirrors `examples/advanced/push_scheduler.py`.
 //!
 //! Run:
 //! ```text

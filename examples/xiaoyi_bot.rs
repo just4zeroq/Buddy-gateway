@@ -1,6 +1,5 @@
 //! Example: XiaoYi (小艺) bot.
 //!
-//! Mirrors `examples/xiaoyi_bot.py`.
 //!
 //! Run:
 //! ```text

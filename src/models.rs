@@ -1,7 +1,7 @@
 //! Data models for buddy-gateway.
 //!
 //! Unified content type system, message models, and routing types used across
-//! all channel implementations. Mirrors `octop_gateway.models`.
+//! all channel implementations.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -185,7 +185,7 @@ impl ContentPart {
         }
     }
 
-    /// Label including the filename for file parts, mirroring Python
+    /// Label including the filename for file parts
     /// `BaseChannel._get_media_label` (`"File: {filename}"`).
     pub fn label_with_filename(&self) -> String {
         match self {
@@ -445,7 +445,7 @@ impl InboundMessage {
 // Raw payload (the input to `parse_inbound`)
 // ---------------------------------------------------------------------------
 
-/// Untyped payload handed to `parse_inbound`. Mirrors the Python `Any`.
+/// Untyped payload handed to `parse_inbound`.
 #[derive(Debug, Clone)]
 pub enum RawPayload {
     Json(Value),

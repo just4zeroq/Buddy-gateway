@@ -1,6 +1,6 @@
 //! MQTT channel for IoT devices and robots.
 //!
-//! Mirrors `octop_gateway.channels.mqtt`. Uses `rumqttc` async client. Inbound
+//! Uses the `rumqttc` async client. Inbound
 //! messages on `subscribe_topic` are parsed and enqueued; outbound text is
 //! published to `publish_topic` (with `{client_id}` substituted).
 
@@ -35,7 +35,7 @@ pub struct MQTTConfig {
 }
 
 impl Default for MQTTConfig {
-    /// Mirrors the Python `MQTTConfig` dataclass defaults
+    /// Default values
     /// (port 8883, TCP transport, TLS on, QoS 2, sample topics).
     fn default() -> Self {
         MQTTConfig {
@@ -108,7 +108,7 @@ impl Channel for MQTTChannel {
             opts.set_credentials(self.config.username.clone(), self.config.password.clone());
         }
         if self.config.tls_enabled {
-            // Python builds an SSLContext honoring tls_ca_pem > tls_ca_certs and
+            // builds an SSLContext honoring tls_ca_pem > tls_ca_certs and
             // optional client cert/key. Reproduce that selection here.
             let ca = if !self.config.tls_ca_pem.is_empty() {
                 self.config.tls_ca_pem.as_bytes().to_vec()

@@ -1,9 +1,8 @@
 //! Telegram channel: Bot API with HTTP long polling.
 //!
-//! Mirrors `octop_gateway.channels.telegram`. The Python SDK
-//! (`python-telegram-bot`) is replaced by direct Bot API HTTP calls via
-//! `reqwest` plus a background `getUpdates` long-polling loop that converts each
-//! update into a native payload and enqueues it as `RawPayload::Json`.
+//! Direct Bot API HTTP calls via `reqwest` plus a background `getUpdates`
+//! long-polling loop that converts each update into a native payload and
+//! enqueues it as `RawPayload::Json`.
 //!
 //! `format_html.py` is inlined verbatim as [`format_html`].
 
@@ -23,12 +22,12 @@ const TG_SEND_CHUNK_SIZE: usize = 4000;
 const TG_MAX_FILE_SIZE_BYTES: usize = 50 * 1024 * 1024;
 
 // ===========================================================================
-// Inline port of `octop_gateway/channels/telegram/format_html.py`
+// Markdown -> Telegram HTML formatter used by `send_text`.
 // ===========================================================================
 
 /// Convert standard Markdown to Telegram-compatible HTML.
 ///
-/// Direct 1:1 port of `format_html.py`. The two italic rules use Python
+/// Markdown -> Telegram HTML. The two italic rules use
 /// lookbehind/lookahead (`(?<!\w)...(?!\w)`), which the `regex` crate does not
 /// support, so they are emulated by [`replace_italic`] with identical
 /// leftmost-match + minimal-content + backtracking semantics.
@@ -51,7 +50,7 @@ pub mod format_html {
         c.is_alphanumeric() || c == '_'
     }
 
-    /// Emulate Python `re.sub(r"(?<!\w)DELIM(.+?)DELIM(?!\w)", ...)`.
+    /// Emulate `re.sub(r"(?<!\w)DELIM(.+?)DELIM(?!\w)", ...)`.
     fn replace_italic(text: &str, delim: u8, tag: &str) -> String {
         let bytes = text.as_bytes();
         let n = bytes.len();
@@ -256,7 +255,7 @@ fn default_true() -> bool {
     true
 }
 
-/// Deserialize `allowed_user_ids` the way Python `TelegramConfig.from_dict`
+/// Deserialize `allowed_user_ids` the way `TelegramConfig.from_dict`
 /// does: accept a list or a comma/whitespace-separated string, require
 /// ASCII-digit IDs, and de-duplicate preserving order.
 fn de_allowed_user_ids<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
@@ -362,7 +361,7 @@ fn json_to_string(v: &Value) -> Option<String> {
     }
 }
 
-/// Python truthiness for `message_thread_id` (`None` / `0` / `""` are falsy).
+/// truthiness for `message_thread_id` (`None` / `0` / `""` are falsy).
 fn truthy_thread(v: &Value) -> Option<Value> {
     match v {
         Value::Null => None,
@@ -374,7 +373,7 @@ fn truthy_thread(v: &Value) -> Option<Value> {
 }
 
 /// Telegram accepts `chat_id` as an integer or string. Send numeric ids as
-/// integers to match the Python `int(chat_id)` call.
+/// integers to match the `int(chat_id)` call.
 fn chat_id_value(chat_id: &str) -> Value {
     match chat_id.parse::<i64>() {
         Ok(n) => json!(n),
@@ -382,7 +381,7 @@ fn chat_id_value(chat_id: &str) -> Value {
     }
 }
 
-/// Split `text` into `TG_SEND_CHUNK_SIZE`-character pieces (Python slices by
+/// Split `text` into `TG_SEND_CHUNK_SIZE`-character pieces (slices by
 /// code point, not byte).
 fn chunk_text(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -507,8 +506,7 @@ fn is_allowed_sender(allowed: &[String], user_id: &str) -> bool {
     allowed.is_empty() || allowed.iter().any(|u| u == user_id)
 }
 
-/// Build the native payload for one Telegram `message` object, mirroring
-/// `TelegramChannel._build_native_from_update`.
+/// Build the native payload for one Telegram `message` object.
 async fn build_native_from_message(
     http: &reqwest::Client,
     token: &str,
@@ -601,7 +599,7 @@ async fn build_native_from_message(
     }))
 }
 
-/// Long-polling `getUpdates` loop. Replaces the `python-telegram-bot` updater.
+/// Long-polling `getUpdates` loop. Long-polling updater.
 async fn poll_updates(http: reqwest::Client, token: String, allowed: Vec<String>, cb: EnqueueFn) {
     let mut offset: i64 = 0;
     loop {
@@ -687,7 +685,7 @@ impl TelegramChannel {
         self.core.ensure_http().await
     }
 
-    /// `chat_id = metadata["chat_id"] or subject_id` (Python).
+    /// `chat_id = metadata["chat_id"] or subject_id`.
     fn chat_id_of(&self, subject: &ChannelSubject) -> String {
         subject
             .metadata
@@ -740,7 +738,7 @@ impl Channel for TelegramChannel {
         }
     }
     fn configure_constraints(&self, c: &mut crate::constraints::ChannelConstraints) {
-        // Python `_default_constraints(self)` reads `self._config.show_typing`.
+        // `_default_constraints(self)` reads `self._config.show_typing`.
         c.typing_keepalive_interval = if self.config.show_typing { 4.0 } else { 0.0 };
     }
 
@@ -757,7 +755,7 @@ impl Channel for TelegramChannel {
         let session = format!("telegram-{}", &uuid::Uuid::new_v4().to_string()[..12]);
         self.core.set_connection_session(Some(session));
 
-        // Probe the bot (Python SDK `initialize()`); non-fatal on failure.
+        // Probe the bot (SDK `initialize()`); non-fatal on failure.
         let me_url = format!("{}{}/getMe", TG_API, self.config.bot_token);
         if let Ok(resp) = http.post(&me_url).send().await {
             if let Ok(v) = resp.json::<Value>().await {
@@ -815,7 +813,7 @@ impl Channel for TelegramChannel {
             html_body["parse_mode"] = json!("HTML");
 
             if !api_call(&http, &token, "sendMessage", &html_body).await {
-                // Retry without parse_mode (plain text), mirroring Python.
+                // Retry without parse_mode (plain text).
                 if !api_call(&http, &token, "sendMessage", &body).await {
                     tracing::error!("Telegram send_text failed chat_id={}", chat_id);
                 }
@@ -871,7 +869,7 @@ impl Channel for TelegramChannel {
                     if ok {
                         Ok(())
                     } else {
-                        // Upload failure shares the Python fail-soft boundary.
+                        // Upload failure shares the fail-soft boundary.
                         self.send_text(subject, &format!("[{} (upload failed)]", label))
                             .await
                     }

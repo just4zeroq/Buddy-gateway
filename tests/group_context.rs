@@ -1,4 +1,4 @@
-//! Tests for group context policy (mirrors tests/test_group_context.py).
+//! Tests for group context policy.
 
 use std::collections::HashMap;
 

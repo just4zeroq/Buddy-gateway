@@ -1,6 +1,5 @@
 //! Example: Telegram bot (echo).
 //!
-//! Mirrors `examples/telegram_bot.py`.
 //!
 //! Run:
 //! ```text

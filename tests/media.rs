@@ -1,4 +1,4 @@
-//! Tests for the filesystem media backend (mirrors tests/test_media.py).
+//! Tests for the filesystem media backend.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

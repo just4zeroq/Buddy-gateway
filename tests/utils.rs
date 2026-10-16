@@ -1,4 +1,4 @@
-//! Tests for utils (mirrors tests/test_utils.py).
+//! Tests for utils.
 
 use std::collections::HashMap;
 

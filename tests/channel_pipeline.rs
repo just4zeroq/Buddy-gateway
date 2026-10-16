@@ -1,4 +1,4 @@
-//! Tests for the shared channel pipeline (mirrors tests/test_channel.py).
+//! Tests for the shared channel pipeline.
 
 use std::collections::HashMap;
 use std::sync::Arc;

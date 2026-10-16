@@ -1,4 +1,4 @@
-//! Tests for constraints (mirrors tests/test_constraints.py).
+//! Tests for constraints.
 
 use std::collections::HashMap;
 use std::time::Instant;

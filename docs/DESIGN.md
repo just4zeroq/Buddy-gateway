@@ -1,14 +1,14 @@
-# octop-gateway 开发设计文档
+# Buddy Gateway 开发设计文档
 
-> 本文档基于 `octop-gateway`（Python 版）源码整理，描述其架构、核心模块、
-> 数据流、约束系统与 Channel 规范，并给出对应的 Rust 复刻方案。
-> Rust 复刻工程位于 `buddy-gateway/`（`D:\code\buddy-gateway`）。
+> 本文档描述 `buddy-gateway` 的架构、核心模块、
+> 数据流、约束系统与 Channel 规范。
+> 工程位于 `buddy-gateway/`（`D:\code\buddy-gateway`）。
 
 ---
 
 ## 1. 项目概述
 
-`octop-gateway` 是一个**多平台 IM 渠道桥接框架**，为 AI Agent / Bot 提供统一的消息抽象。
+`buddy-gateway` 是一个**多平台 IM 渠道桥接框架**，为 AI Agent / Bot 提供统一的消息抽象。
 它把来自不同 IM 平台（飞书、钉钉、企业微信、微信 iLink、QQ、Discord、Telegram、
 元宝、小艺、MQTT）的原始事件，归一化为统一的 `InboundMessage`，交给用户提供的
 `MessageProcessor`（异步生成器）处理，再把处理结果（`MessageEvent` 流）按各平台协议回送。
@@ -44,7 +44,7 @@ _prepare_inbound ─► _process_inbound ─► MessageProcessor ─► MessageE
 
 `channels/__init__.py`（Rust 中为 `channels/mod.rs`）是唯一的注册点
 （`BUILTIN_CHANNELS` 映射 + `ChannelKind` 枚举），并以懒加载方式导入，
-确保 `import octop_gateway` 不会拉起 Discord / Telegram 等全部 SDK。
+确保不会把 Discord / Telegram 等全部通道一并拉起。
 
 ### 2.2 媒体流架构
 
@@ -215,7 +215,7 @@ BaseChannel.load_media_bytes(part):              # 出站读取（_send_media �
 2. 实现抽象方法：`start()` / `stop()` / `send_text()` / `send_content()` / `send_media()` / `parse_inbound()`。
 3. 构造签名一致：`(processor, config, channel_id?, tenant_id?, debounce_seconds?, constraints?)`。
 4. `Config` 继承 `ChannelConfig`，自带平台字段；`ChannelConfig` 提供 `channel_id` / `tenant_id` / `from_dict()`。
-5. 若平台 SDK 用回调线程（`lark-oapi` / `wecom-sdk` / `discord.py`），用 `enqueue()` 经事件循环回派。
+5. 若平台 SDK 使用回调线程，则通过 `enqueue()` 经事件循环回派，保证线程安全。
 6. 日志：`tracing` INFO 记录生命周期/消息，DEBUG 记录协议细节。
 7. 错误：worker 内绝不崩溃，记录日志后继续。
 8. 去重：用 `OrderedDict` LRU（max 1000）实现 `_is_duplicate(msg_id)`。
@@ -261,35 +261,34 @@ BaseChannel.load_media_bytes(part):              # 出站读取（_send_media �
 
 ## 11. 注册机制（`channels/__init__.py` → `channels/mod.rs`）
 
-- `_CHANNEL_MAP`（Python）→ `BUILTIN_CHANNELS`（Rust 中 `HashMap<&str, fn ...>` 或枚举分发）。
+- `ChannelKind` 到构造函数的映射（`HashMap<&str, fn ...>` 或枚举分发）。
 - `ChannelKind` 枚举 + `SUPPORTED_CHANNEL_KINDS`。
 - 懒加载：仅当实际构造某渠道时才 import 其模块 / SDK。
-- 一致性测试（parity test）：`_CHANNEL_MAP` 与 `ChannelKind` 必须同步。
+- 一致性测试：映射表与 `ChannelKind` 必须同步。
 
 ---
 
-## 12. Rust 复刻方案（`buddy-gateway`）
+## 12. 实现要点（`buddy-gateway`）
 
-### 12.1 设计映射
+### 12.1 关键选型
 
-| Python | Rust |
+| 能力 | 选型 |
 |--------|------|
-| `pydantic.BaseModel` + `StrEnum` | `#[derive(serde::Serialize/Deserialize)]` + `enum` + `strum`/`serde` |
-| `BaseChannel` 抽象类（状态 + 行为） | 拆分为 **`ChannelCore`**（共享状态 + 共享流水线泛型方法）+ **`Channel` trait**（平台契约） |
-| `asyncio` | `tokio` |
-| `aiohttp` | `reqwest` |
-| `paho-mqtt` | `rumqttc` |
-| `websockets` / `python-socketio` | `tokio-tungstenite` |
-| 异步生成器 `AsyncIterator[MessageEvent]` | `MessageProcessor = Box<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item=MessageEvent> + Send>>>`（用 `async_stream` / `futures`） |
-| `aiohttp.ClientSession` | `reqwest::Client`（含连接池） |
-| `logging` | `tracing` |
-| `base64` | `base64` crate |
-| `uuid4().hex` | `uuid::Uuid::new_v4().simple().to_string()` |
+| 数据模型 | `#[derive(serde::Serialize/Deserialize)]` + `enum` |
+| 通道抽象 | **`ChannelCore`**（共享状态 + 共享流水线）+ **`Channel` trait**（平台契约） |
+| 异步运行时 | `tokio` |
+| HTTP 客户端 | `reqwest`（含连接池） |
+| MQTT | `rumqttc` |
+| WebSocket | `tokio-tungstenite` |
+| 消息处理器 | `MessageProcessor = Arc<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item=MessageEvent> + Send>> + Send + Sync>`（用 `async_stream` / `futures`） |
+| 日志 | `tracing` |
+| 编解码 | `base64` / `hex` |
+| ID | `uuid::Uuid::new_v4()` |
 
 ### 12.2 关键 Rust 设计：`ChannelCore` + `Channel` trait
 
-Python 的 `BaseChannel` 同时持有状态与定义抽象方法。Rust 没有抽象类字段，
-因此把"共享状态 + 共享流水线逻辑"抽成 `ChannelCore` 结构体（含 `media_backend`、
+Rust 的 trait 无法持有字段，因此把“共享状态 + 共享流水线逻辑”抽成
+`ChannelCore` 结构体（含 `media_backend`、
 `rate_limiter`、`known_subjects`、`constraints`、`processor`、`group_context_manager`、
 `connection_session`、`enqueue` 回调等），并把"平台契约"定义为 `Channel` trait：
 
@@ -328,8 +327,7 @@ pub struct TelegramChannel {
 impl Channel for TelegramChannel { /* 实现平台方法与 core() 访问 */ }
 ```
 
-这样**共享流水线只写一次**（在 `Channel` trait 的默认方法里），每个渠道只需实现平台相关部分，
-与 Python "子类只写平台逻辑、其余继承" 的语义完全一致。
+这样**共享流水线只写一次**（在 `Channel` trait 的默认方法里），每个渠道只需实现平台相关部分。
 
 ### 12.3 目录结构
 
@@ -367,15 +365,15 @@ buddy-gateway/
     └── manager_tests.rs
 ```
 
-### 12.4 复刻范围与说明
+### 12.4 实现范围与说明
 
 - **核心层**（`models` / `constraints` / `media` / `utils` / `group_context` / `push_routing` /
-  `channel` / `manager`）：**完整复刻**语义，含单元测试。
+  `channel` / `manager`）：完整实现，含单元测试。
 - **channel 适配器**：10 个平台全部按 `Channel` trait 契约实现 `parse_inbound` / `start` / `stop` /
   `send_text` / `send_content` / `send_media`，HTTP/WS 协议使用 `reqwest` / `tokio-tungstenite` /
   `rumqttc` 在公开 API 层面实现。其中 `loopback` / `mqtt` / `telegram` 为**可直接运行与测试**的参考实现；
   其余平台因依赖专有 SDK 或需线上凭据，按公开协议结构实现并保证**编译通过**，线上联调需对应凭据。
-- 由于各平台 SDK 为闭源或需鉴权，复刻侧重**框架契约与协议结构**的忠实还原，而非逐字节兼容私有 SDK。
+- 各平台 SDK 多为闭源或需鉴权，实现侧重**框架契约与协议结构**的忠实还原，而非逐字节兼容私有 SDK。
 
 ---
 
@@ -394,7 +392,7 @@ buddy-gateway/
 
 ---
 
-## 14. 约束与禁止项（复刻时同样遵守）
+## 14. 约束与禁止项
 
 - 不要覆写 `handle_inbound`（流式协议除外），用 `_preprocess_inbound` / `_process_inbound` 定制。
 - 子类内部不要调用 `reply_*` / `push_*`。

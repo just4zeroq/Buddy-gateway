@@ -1,5 +1,4 @@
 //! Shared helpers for proactive (bot-initiated) push routing.
-//! Mirrors `octop_gateway.push_routing`.
 
 use std::collections::HashMap;
 use serde_json::Value;
