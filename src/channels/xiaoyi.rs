@@ -349,10 +349,17 @@ async fn send_media_artifact(
     send_to_session(shared, session_id, msg).await;
 }
 
-async fn send_final_message(shared: &XiaoyiShared, session_id: &str, task_id: &str, message_id: &str) {
+async fn send_final_message(
+    shared: &XiaoyiShared,
+    session_id: &str,
+    task_id: &str,
+    message_id: &str,
+    failed: bool,
+) {
     if !any_alive(shared) || task_id.is_empty() {
         return;
     }
+    let state = if failed { "failed" } else { "completed" };
     let detail = json!({
         "jsonrpc": "2.0",
         "id": message_id,
@@ -362,7 +369,7 @@ async fn send_final_message(shared: &XiaoyiShared, session_id: &str, task_id: &s
             "final": false,
             "status": {
                 "message": {"role": "agent", "parts": [{"kind": "text", "text": ""}]},
-                "state": "completed",
+                "state": state,
             },
         },
     });
@@ -930,17 +937,30 @@ impl Channel for XiaoyiChannel {
             Some(processor) => {
                 let mut stream = processor(message.clone());
                 while let Some(event) = stream.next().await {
-                    let is_completed = event.event_type == MessageEventType::Completed;
+                    let terminal = event.event_type == MessageEventType::Completed
+                        || event.event_type == MessageEventType::Error;
                     self.deliver_a2a_event(&event, &session_id, &task_id, &message_id)
                         .await;
-                    if is_completed {
+                    if event.event_type == MessageEventType::Completed {
                         processing_succeeded = true;
+                    }
+                    // ERROR is terminal: A2A delivery stops with the failed
+                    // status instead of waiting for another event.
+                    if terminal {
                         break;
                     }
                 }
+                crate::utils::close_event_stream(stream).await;
             }
         }
-        send_final_message(self.shared(), &session_id, &task_id, &message_id).await;
+        send_final_message(
+            self.shared(),
+            &session_id,
+            &task_id,
+            &message_id,
+            !processing_succeeded,
+        )
+        .await;
         processing_succeeded
     }
 

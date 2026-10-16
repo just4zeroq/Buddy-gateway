@@ -911,11 +911,13 @@ impl Channel for WeComChannel {
         // First-token timeout handling: if the first event does not arrive in
         // `reply_timeout * 0.8` seconds, stream a placeholder and keep waiting.
         let mut first_event: Option<MessageEvent> = None;
+        let mut stream_exhausted = false;
         if constraints.reply_timeout > 0.0 && constraints.timeout_strategy == "placeholder" {
             let dur = Duration::from_secs_f64(constraints.reply_timeout * 0.8);
-            match tokio::time::timeout(dur, stream.next()).await {
+            let outcome = tokio::time::timeout(dur, stream.next()).await;
+            match outcome {
                 Ok(Some(ev)) => first_event = Some(ev),
-                Ok(None) => return Ok(()),
+                Ok(None) => stream_exhausted = true,
                 Err(_) => {
                     let placeholder = constraints.placeholder_text();
                     if !placeholder.is_empty()
@@ -928,10 +930,16 @@ impl Channel for WeComChannel {
                     }
                     match stream.next().await {
                         Some(ev) => first_event = Some(ev),
-                        None => return Ok(()),
+                        None => stream_exhausted = true,
                     }
                 }
             }
+        }
+        if stream_exhausted {
+            // Nothing was delivered; release the producer explicitly instead of
+            // waiting for an event that will never come.
+            crate::utils::close_event_stream(stream).await;
+            return Ok(());
         }
 
         let mut action = StreamAction::Continue;
@@ -969,6 +977,8 @@ impl Channel for WeComChannel {
             }
         }
         if matches!(action, StreamAction::Finish) {
+            // `Finish` already replied; release the producer explicitly.
+            crate::utils::close_event_stream(stream).await;
             return Ok(());
         }
 
@@ -1007,6 +1017,7 @@ impl Channel for WeComChannel {
                 let _ = self.send_media(&reply_subject, media).await;
             }
         }
+        crate::utils::close_event_stream(stream).await;
 
         Ok(())
     }

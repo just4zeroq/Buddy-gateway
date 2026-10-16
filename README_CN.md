@@ -194,6 +194,25 @@ src/
  └─ channels/         discord feishu dingtalk qq wecom weixin yuanbao xiaoyi mqtt telegram（+ loopback）
 ```
 
+## 运行时注册通道类型
+
+插件可以在不改本 crate 的前提下接入自己的平台。每个 kind 归注册它的 `plugin_id` 所有：同一 owner 可
+以在重载时替换，其他 owner 与所有内置 kind 都不能被覆盖。
+
+```rust
+use buddy_gateway::channels::{register_channel_kind, unregister_channel_kind, ChannelBuilder};
+
+let builder: ChannelBuilder = std::sync::Arc::new(
+    |config, processor, channel_id, tenant_id| -> buddy_gateway::errors::Result<Box<dyn Channel>> {
+        todo!() // 在这里构造你自己的 Channel
+    },
+);
+register_channel_kind("acme", builder, "my-plugin")?;
+unregister_channel_kind("acme", "my-plugin")?;
+```
+
+注册后 `build_channel("acme", ...)` 即可解析，manager 与现有入口都无需改动。
+
 ## 群聊策略（`group_context`）
 
 `group_context` 把「平台可见性」与「Agent 触发」分离。QQ 默认保守策略 `auto + mention + recent(10)`，支持按原生群 ID 覆盖：

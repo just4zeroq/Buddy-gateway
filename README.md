@@ -259,6 +259,7 @@ cargo run --example loopback_echo
 - [How to Use](#how-to-use)
 - **Reference**
   - [Architecture](#architecture)
+  - [Registering a channel kind at runtime](#registering-a-channel-kind-at-runtime)
   - [QQ Bot QR binding](#qq-bot-qr-binding)
   - [Group conversation policy](#group-conversation-policy)
   - [Development](#development)
@@ -296,6 +297,28 @@ src/
 ```
 
 Each `Channel` owns its transport; the manager owns scheduling, media, constraints, and fan-out. Your processor only sees the normalized stream.
+
+### Registering a channel kind at runtime
+
+Plugins can add their own platform without patching the crate. A kind is owned by the `plugin_id` that
+registered it: the same owner may replace it on reload, another owner (and every builtin kind) cannot.
+
+```rust
+use buddy_gateway::channels::{register_channel_kind, unregister_channel_kind, ChannelBuilder};
+
+let builder: ChannelBuilder = std::sync::Arc::new(
+    |config, processor, channel_id, tenant_id| -> buddy_gateway::errors::Result<Box<dyn Channel>> {
+        // build your own Channel here
+        todo!()
+    },
+);
+register_channel_kind("acme", builder, "my-plugin")?;
+// ... later
+unregister_channel_kind("acme", "my-plugin")?;
+```
+
+`build_channel("acme", ...)` then resolves the registration, so the manager and every existing entry
+point keep working unchanged.
 
 ### QQ Bot QR binding
 

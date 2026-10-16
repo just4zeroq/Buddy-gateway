@@ -809,17 +809,28 @@ fn take_thinking_text(
     }
 }
 
-fn locked_stream_text(session: &Arc<stream::StreamSession>, text: &str) -> String {
+/// Fold one answer snapshot onto the text QQ has already accepted.
+///
+/// `answer_prefix` freezes whatever narration the replace bubble could not
+/// remove (accepted or in-flight text before a tool call) so every later
+/// snapshot extends it instead of repeating it.
+fn locked_stream_text(session: &Arc<stream::StreamSession>, text: &str, answer_prefix: &str) -> String {
     let accepted = session.prefix_base();
+    let text = format!("{answer_prefix}{text}");
     let text = if accepted.starts_with(C2C_STREAM_HOLD) && !text.starts_with(C2C_STREAM_HOLD) {
         format!("{C2C_STREAM_HOLD}{text}")
     } else {
-        text.to_string()
+        text
     };
     stream::reconcile_stream_text(&accepted, &text)
 }
 
-fn offer_answer(session: &Arc<stream::StreamSession>, text_parts: &[String], final_: bool) {
+fn offer_answer(
+    session: &Arc<stream::StreamSession>,
+    text_parts: &[String],
+    final_: bool,
+    answer_prefix: &str,
+) {
     let text = answer_text(text_parts);
     if session.failed() || session.closing() {
         return;
@@ -832,7 +843,7 @@ fn offer_answer(session: &Arc<stream::StreamSession>, text_parts: &[String], fin
     if payload.is_empty() {
         return;
     }
-    let locked = locked_stream_text(session, &payload);
+    let locked = locked_stream_text(session, &payload, answer_prefix);
     Arc::clone(session).offer(locked);
 }
 
@@ -1801,6 +1812,9 @@ impl QQChannel {
         let mut media_buffer: Vec<ContentPart> = Vec::new();
         let mut processing_succeeded = false;
         let mut errored = false;
+        // QQ cannot remove accepted or in-flight narration. Freeze that prefix
+        // once so each new answer snapshot extends it instead of repeating it.
+        let mut answer_prefix = String::new();
 
         while let Some(event) = event_stream.next().await {
             match event.event_type {
@@ -1823,7 +1837,7 @@ impl QQChannel {
                             }
                         }
                     }
-                    offer_answer(&session, &text_parts, false);
+                    offer_answer(&session, &text_parts, false, &answer_prefix);
                 }
                 MessageEventType::Message => {
                     if let Some(t) = take_thinking_text(&mut thinking_parts, show_thinking, &constraints) {
@@ -1853,7 +1867,7 @@ impl QQChannel {
                             text_parts.push(extra);
                         }
                     }
-                    offer_answer(&session, &text_parts, false);
+                    offer_answer(&session, &text_parts, false, &answer_prefix);
                     media_buffer.extend(extract_media(&event.content));
                 }
                 MessageEventType::ThinkingDelta => {
@@ -1887,6 +1901,7 @@ impl QQChannel {
                     }
                     text_parts.clear();
                     Arc::clone(&session).discard_unsent();
+                    answer_prefix = session.prefix_base();
                     if show_tool_hints {
                         let hint = tool_hint_message(&event.metadata, &constraints, "start");
                         if !hint.is_empty() {
@@ -1923,9 +1938,9 @@ impl QQChannel {
 
         if !errored {
             let answer = answer_text(&text_parts);
-            offer_answer(&session, &text_parts, true);
+            offer_answer(&session, &text_parts, true, &answer_prefix);
             let locked = if !answer.is_empty() {
-                locked_stream_text(&session, &answer)
+                locked_stream_text(&session, &answer, &answer_prefix)
             } else {
                 session.last_accepted()
             };
@@ -1960,6 +1975,9 @@ impl QQChannel {
             let last = session.last_accepted();
             Arc::clone(&session).finish(last, true).await;
         }
+        // ERROR and completion both stop the turn; release the producer here
+        // rather than waiting for another event.
+        crate::utils::close_event_stream(event_stream).await;
 
         if errored {
             return false;

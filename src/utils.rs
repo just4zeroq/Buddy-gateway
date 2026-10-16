@@ -1,11 +1,46 @@
 //! Utility functions for content inspection, merging, and debouncing.
 
-use crate::models::{ContentPart, ContentType, InboundMessage};
+use crate::models::{ContentPart, ContentType, InboundMessage, MessageEvent};
+use futures::Stream;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+
+/// Event producer returned by a [`crate::channel::MessageProcessor`].
+pub type EventStream = Pin<Box<dyn Stream<Item = MessageEvent> + Send>>;
+
+/// How long an event producer may take to release its resources.
+pub const STREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run an event producer's finalizers without waiting for another event.
+///
+/// `MessageEventType::Error` is terminal: the consumer stops as soon as it is
+/// seen, so the producer is never polled again. Releasing the stream explicitly
+/// (instead of letting the borrow go out of scope after the reply) keeps host
+/// cleanup from being deferred to an arbitrary later point. Destructors run on
+/// a blocking thread so a stalled producer cannot hold the async worker, and a
+/// producer that never returns is abandoned after [`STREAM_CLOSE_TIMEOUT`].
+///
+/// Callers must release their own local running/typing state; this only frees
+/// the producer.
+pub async fn close_event_stream(stream: EventStream) {
+    let handle = match tokio::runtime::Handle::try_current() {
+        Ok(_) => Some(tokio::task::spawn_blocking(move || drop(stream))),
+        Err(_) => {
+            drop(stream);
+            None
+        }
+    };
+    let Some(handle) = handle else { return };
+    match tokio::time::timeout(STREAM_CLOSE_TIMEOUT, handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::warn!("Event stream cleanup failed: {}", err),
+        Err(_) => tracing::warn!("Event stream cleanup timed out"),
+    }
+}
 
 /// Return True if any part contains non-empty text.
 pub fn has_text(parts: &[ContentPart]) -> bool {

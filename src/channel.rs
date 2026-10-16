@@ -28,7 +28,7 @@ use crate::models::{
     ChannelSubject, ContentPart, InboundMessage, MessageEvent, MessageEventType, RawPayload,
 };
 use crate::push_routing::strip_ephemeral_push_meta;
-use crate::utils::{extract_media, extract_text, merge_messages};
+use crate::utils::{close_event_stream, extract_media, extract_text, merge_messages};
 
 /// Boxed, shared processor: maps an inbound message to an event stream.
 pub type MessageProcessor = Arc<
@@ -733,16 +733,28 @@ pub trait Channel: Send + Sync {
             Some(u) if !u.is_empty() => u.to_string(),
             _ => return,
         };
-        let filename = resolve_media_filename(part, index, ts);
-        let key = format!(
-            "{}/{}/{}",
-            self.core().channel_type(),
-            self.core().channel_id(),
-            filename
-        );
         match self.fetch_remote_media(&url).await {
             Ok((data, mime)) => {
+                // Image downloaders may identify the actual format from file
+                // bytes. Resolve the storage extension only after applying that
+                // information, so a `.png` URL that really carries JPEG data is
+                // stored (and later served) as JPEG.
+                let mime = if matches!(part, ContentPart::Image(_)) && mime.starts_with("image/") {
+                    if let ContentPart::Image(x) = part {
+                        x.mime_type = Some(mime.clone());
+                    }
+                    mime
+                } else {
+                    mime
+                };
                 if self.core().media_backend().is_some() {
+                    let filename = resolve_media_filename(part, index, ts);
+                    let key = format!(
+                        "{}/{}/{}",
+                        self.core().channel_type(),
+                        self.core().channel_id(),
+                        filename
+                    );
                     // Save through the media backend; on success stamp the local
                     // path / size / mime onto the inner content struct.
                     let save_ok = {
@@ -866,6 +878,8 @@ pub trait Channel: Send + Sync {
         let mut thinking_buffer = String::new();
         let mut placeholder_sent = false;
         let mut processing_succeeded = false;
+        // ERROR is terminal: the turn stops as soon as an error is delivered.
+        let mut terminal_error = false;
 
         let cancel_guards = |timeout_guard: &mut Option<ReplyTimeoutGuard>,
                             typing_keepalive: &mut Option<TypingKeepalive>| {
@@ -956,8 +970,13 @@ pub trait Channel: Send + Sync {
                                     self.on_tool_end(subject, &ev).await;
                                 }
                                 MessageEventType::Error => {
-                                    let err = ev.error.clone().unwrap_or_else(|| "An unexpected error occurred.".to_string());
-                                    let _ = self.rate_limited_send(subject, &err).await;
+                                    cancel_guards(&mut timeout_guard, &mut typing_keepalive);
+                                    if !delta_buffer.is_empty() {
+                                        let d = std::mem::take(&mut delta_buffer);
+                                        let _ = self.rate_limited_send(subject, &d).await;
+                                    }
+                                    let _ = self.deliver_event(subject, &ev).await;
+                                    terminal_error = true;
                                 }
                             }
                         }
@@ -974,7 +993,14 @@ pub trait Channel: Send + Sync {
                     let _ = self.send_typing_indicator(subject).await;
                 }
             }
+            if terminal_error {
+                break;
+            }
         }
+        cancel_guards(&mut timeout_guard, &mut typing_keepalive);
+        // Release the producer without waiting for another event; ERROR stops
+        // the turn but must still run the host's cleanup.
+        close_event_stream(stream).await;
         processing_succeeded
     }
 

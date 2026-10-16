@@ -7,7 +7,8 @@
 //! - the `channel_adapter!` macro that generates the repetitive struct /
 //! `new` / `ChannelConfigLike` scaffolding for every adapter.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -111,6 +112,110 @@ pub const SUPPORTED_CHANNEL_KINDS: &[&str] = &[
 /// Channel kinds that receive their events over HTTP webhooks rather than a
 /// long-lived connection.
 pub const WEBHOOK_CHANNEL_KINDS: &[&str] = &["whatsapp", "line", "wechat_mp", "googlechat"];
+
+// ===========================================================================
+// Runtime (plugin) channel-kind registration
+// ===========================================================================
+
+/// Constructor for a runtime-registered channel kind.
+///
+/// Receives the normalized JSON config, the processor, and the explicit
+/// `channel_id` / `tenant_id` overrides, exactly like [`build_channel`].
+pub type ChannelBuilder = Arc<
+    dyn Fn(&Value, MessageProcessor, Option<String>, Option<String>) -> Result<Box<dyn Channel>>
+        + Send
+        + Sync,
+>;
+
+type PluginRegistry = Mutex<HashMap<String, (String, ChannelBuilder)>>;
+
+fn plugin_registry() -> &'static PluginRegistry {
+    static REGISTRY: std::sync::OnceLock<PluginRegistry> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn normalize_kind(kind: &str) -> String {
+    kind.trim().to_ascii_lowercase()
+}
+
+/// Builtin and currently registered plugin kinds.
+pub fn registered_channel_kinds() -> Vec<String> {
+    let mut kinds: Vec<String> = SUPPORTED_CHANNEL_KINDS.iter().map(|s| s.to_string()).collect();
+    let registry = plugin_registry().lock().unwrap_or_else(|e| e.into_inner());
+    for kind in registry.keys() {
+        if !kinds.contains(kind) {
+            kinds.push(kind.clone());
+        }
+    }
+    kinds
+}
+
+/// Register a channel builder for a new kind owned by `plugin_id`.
+///
+/// The same owner may replace its registration (plugin reload); builtins and
+/// kinds owned by another plugin cannot be replaced. Hosts must stop affected
+/// live instances before replacing a registration.
+pub fn register_channel_kind(kind: &str, builder: ChannelBuilder, plugin_id: &str) -> Result<()> {
+    let owner = plugin_id.trim();
+    if owner.is_empty() {
+        return Err(GatewayError::Other("plugin_id must not be empty".into()));
+    }
+    let normalized = normalize_kind(kind);
+    if normalized.is_empty() {
+        return Err(GatewayError::Other("channel kind must not be empty".into()));
+    }
+    if ChannelKind::from_str(&normalized).is_some() {
+        return Err(GatewayError::Other(format!(
+            "channel kind '{}' is a builtin kind and cannot be overridden",
+            normalized
+        )));
+    }
+    let mut registry = plugin_registry().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((existing, _)) = registry.get(&normalized) {
+        if existing != owner {
+            return Err(GatewayError::Other(format!(
+                "channel kind '{}' is owned by another plugin",
+                normalized
+            )));
+        }
+    }
+    registry.insert(normalized, (owner.to_string(), builder));
+    Ok(())
+}
+
+/// Remove the registration owned by `plugin_id`; builtin kinds are preserved.
+///
+/// Returns `true` when a registration was removed.
+pub fn unregister_channel_kind(kind: &str, plugin_id: &str) -> Result<bool> {
+    let owner = plugin_id.trim();
+    if owner.is_empty() {
+        return Err(GatewayError::Other("plugin_id must not be empty".into()));
+    }
+    let normalized = normalize_kind(kind);
+    if ChannelKind::from_str(&normalized).is_some() {
+        return Err(GatewayError::Other(
+            "cannot unregister a builtin channel kind".to_string(),
+        ));
+    }
+    let mut registry = plugin_registry().lock().unwrap_or_else(|e| e.into_inner());
+    match registry.get(&normalized) {
+        None => Ok(false),
+        Some((existing, _)) if existing != owner => Err(GatewayError::Other(format!(
+            "channel kind '{}' is owned by another plugin",
+            normalized
+        ))),
+        Some(_) => {
+            registry.remove(&normalized);
+            Ok(true)
+        }
+    }
+}
+
+/// Look up a runtime-registered builder without holding the registry lock.
+fn plugin_builder(kind: &str) -> Option<ChannelBuilder> {
+    let registry = plugin_registry().lock().unwrap_or_else(|e| e.into_inner());
+    registry.get(kind).map(|(_, builder)| Arc::clone(builder))
+}
 
 // ===========================================================================
 // DRY scaffolding macro.
@@ -467,9 +572,16 @@ pub fn build_channel(
     channel_id: Option<String>,
     tenant_id: Option<String>,
 ) -> Result<Box<dyn Channel>> {
-    let kind = ChannelKind::from_str(channel_type)
-        .ok_or_else(|| GatewayError::UnknownChannel(channel_type.to_string()))?;
     let config = normalize_config(channel_type, config);
+    let kind = match ChannelKind::from_str(channel_type) {
+        Some(k) => k,
+        // Fall back to runtime-registered (plugin) kinds before rejecting.
+        None => {
+            let builder = plugin_builder(&normalize_kind(channel_type))
+                .ok_or_else(|| GatewayError::UnknownChannel(channel_type.to_string()))?;
+            return builder(&config, processor, channel_id, tenant_id);
+        }
+    };
     match kind {
         ChannelKind::Discord => {
             let cfg = discord::DiscordConfig::deserialize(&config)?;
@@ -517,7 +629,8 @@ pub fn build_channel(
             Ok(Box::new(mqtt::MQTTChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
         }
         ChannelKind::Telegram => {
-            let cfg = telegram::TelegramConfig::deserialize(&config)?;
+            let mut cfg = telegram::TelegramConfig::deserialize(&config)?;
+            cfg.normalize()?;
             ensure_credentials(channel_type, &cfg)?;
             Ok(Box::new(telegram::TelegramChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
         }
