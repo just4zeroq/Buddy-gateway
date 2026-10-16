@@ -1,1 +1,1 @@
-# Buddy-gateway
+Buddy IM Gateway
