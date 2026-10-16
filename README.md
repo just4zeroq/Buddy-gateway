@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Buddy Gateway</h1>
-  <p><strong>Multi-platform IM channel bridge for AI agents and bots — a faithful Rust port of <a href="https://github.com/TencentCloud/octop-gateway">octop-gateway</a>.</strong></p>
+  <p><strong>Multi-platform IM channel bridge for AI agents and bots — one abstraction layer, ten IM platforms.</strong></p>
 </div>
 
 <p align="center">
@@ -17,7 +17,7 @@
 
 **buddy-gateway** is a multi-platform IM channel bridge with a unified message abstraction for AI agents and bots. It connects to mainstream IM platforms and normalizes every inbound message into one processing pipeline, so your agent logic is written **once** and runs across Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, and Discord.
 
-> buddy-gateway is a 1:1 Rust reimplementation of the Python [`octop-gateway`](https://github.com/TencentCloud/octop-gateway). Every channel's transport, parsing, media flow, and hooks are ported faithfully — see [`docs/PARITY.md`](docs/PARITY.md) for the item-by-item parity matrix.
+> Every channel ships with its real transport, inbound media parsing, outbound media upload, and platform-specific hooks behind one unified interface — see [`docs/PARITY.md`](docs/PARITY.md) for the per-channel coverage matrix.
 
 ## What is Buddy Gateway?
 
@@ -38,17 +38,17 @@ The gateway sits between your agent and the outside world. Each platform is impl
 
 > Because the abstraction lives in the gateway, swapping IM platforms is a configuration change, not a rewrite.
 
-### How the Python design maps to Rust
+### Key abstractions
 
-| Python (`octop-gateway`) | Rust (`buddy-gateway`) |
+| Abstraction | Role |
 |---|---|
-| `BaseChannel` (ABC) | `Channel` trait + `ChannelCore` (shared state) |
-| `_default_constraints(self)` | `default_constraints()` + `configure_constraints(&self, …)` |
-| `_process_inbound` (overridable, `super()._process_inbound`) | `process_inbound` + `default_process_inbound_body` |
-| `MessageProcessor = Callable[[InboundMessage], AsyncIterator[MessageEvent]]` | `Arc<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item = MessageEvent> + Send>> + Send + Sync>` |
-| `ChannelManager.add_channel(..., **kwargs)` | `add_channel_full(..., ChannelOptions { … })` |
-| `ChannelConfig.from_dict` | `channels::normalize_config` (aliases + strip + coercions) |
-| `asyncio` | `tokio` |
+| `Channel` trait + `ChannelCore` | Platform contract (start / stop / parse_inbound / send_*) split from shared state |
+| `default_constraints()` + `configure_constraints(&self, …)` | Per-channel defaults, plus config-dependent adjustments (e.g. typing interval) |
+| `process_inbound` + `default_process_inbound_body` | Overridable inbound pipeline that can still delegate the standard loop |
+| `MessageProcessor` | `Arc<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item = MessageEvent> + Send>> + Send + Sync>` |
+| `add_channel_full(..., ChannelOptions { … })` | Full channel construction with processor / ids / debounce / constraint overrides |
+| `channels::normalize_config` | Config normalization: field aliases, trimming, and per-channel coercions |
+| `tokio` | Async runtime driving every channel and worker pool |
 
 ### Core Technology
 
@@ -100,7 +100,7 @@ Implement the `Channel` trait, register it with `ChannelManager::add_channel_obj
 Run several channels of the same kind (e.g. two Feishu apps for two teams) — each is isolated by `channel_id`.
 
 #### Manager hooks
-`on_pre_lock`, `control_message_predicate`, and `interrupt_message_predicate` let hosts bypass the session lock for `/stop`-style control messages — exactly as the Python manager does.
+`on_pre_lock`, `control_message_predicate`, and `interrupt_message_predicate` let hosts bypass the session lock for `/stop`-style control messages.
 
 ## How to Use
 
@@ -216,12 +216,12 @@ TELEGRAM_BOT_TOKEN=123:abc cargo run --example telegram_bot
 cargo run --example loopback_echo
 ```
 
-| Example | Mirrors (Python) |
+| Example | What it shows |
 |---|---|
-| `telegram_bot` · `discord_bot` · `feishu_bot` · `qq_bot` · `wecom_bot` · `weixin_bot` · `xiaoyi_bot` · `mqtt_bot` | `*_bot.py` |
-| `all_channels` | `all_channels.py` |
-| `advanced/feishu_advanced` · `advanced/qq_advanced` · `advanced/push_scheduler` | `advanced/*.py` |
-| `loopback_echo` | new: full pipeline with a built-in loopback channel |
+| `telegram_bot` · `discord_bot` · `feishu_bot` · `qq_bot` · `wecom_bot` · `weixin_bot` · `xiaoyi_bot` · `mqtt_bot` | A single-platform echo bot |
+| `all_channels` | Four channels running in one manager |
+| `advanced/feishu_advanced` · `advanced/qq_advanced` · `advanced/push_scheduler` | Per-channel constraints and proactive push |
+| `loopback_echo` | The full pipeline with a built-in loopback channel (no network) |
 
 ## Documentation
 
@@ -234,7 +234,7 @@ cargo run --example loopback_echo
   - [Group conversation policy](#group-conversation-policy)
   - [Development](#development)
 - **Project Info**
-  - [Parity with octop-gateway](#parity-with-octop-gateway)
+  - [Channel coverage](#channel-coverage)
   - [License](#license)
 
 ### Architecture
@@ -326,9 +326,9 @@ cargo build --release       # optimized build
 
 > **Tip:** this project sets `[profile.dev] incremental = false` for deterministic builds — see `Cargo.toml`.
 
-## Parity with octop-gateway
+## Channel coverage
 
-Every channel is ported 1:1: real transport, inbound media parsing, outbound platform media upload, overridden hooks, config aliases, and submodules. The item-by-item matrix (including the few Rust-idiom mappings that are not functional gaps) lives in [`docs/PARITY.md`](docs/PARITY.md); the architecture mapping is in [`docs/DESIGN.md`](docs/DESIGN.md).
+Every channel ships its real transport, inbound media parsing, outbound media upload, overridden hooks, and config aliases. The per-channel matrix lives in [`docs/PARITY.md`](docs/PARITY.md); the design overview is in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## 🤝 Contributing
 
@@ -336,14 +336,6 @@ Every channel is ported 1:1: real transport, inbound media parsing, outbound pla
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Run `cargo check --all-targets` and `cargo test` before submitting
 4. Open a Pull Request against `main`
-
-## 🔗 Related projects
-
-| Project | Description |
-|---------|-------------|
-| [octop-gateway](https://github.com/TencentCloud/octop-gateway) | The original Python implementation this crate ports |
-| [octop-harness](https://github.com/TencentCloud/octop-harness) | Agent runtime that drives the gateway processor |
-| [Octop](https://github.com/TencentCloud/Octop) | The self-hosted assistant that composes the Harness stack |
 
 ## 📄 License
 

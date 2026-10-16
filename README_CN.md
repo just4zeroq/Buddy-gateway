@@ -5,7 +5,6 @@
 </p>
 
 > **多平台 IM 通道桥**：为 AI Agent / 机器人提供统一的即时通讯抽象层。
-> 本项目是 Python 版 [octop-gateway](https://github.com/TencentCloud/octop-gateway) 的 **Rust 1:1 复刻**。
 
 `buddy-gateway` 接入主流 IM 平台，把每条入站消息归一化到同一条处理管线，因此你的 Agent 逻辑**只写一次**，就能同时跑在飞书、钉钉、QQ、企业微信、微信 iLink、元宝、小艺、MQTT、Telegram、Discord 上。
 
@@ -30,17 +29,17 @@
 
 > 因为抽象收敛在网关里，切换 IM 平台只是改配置，而不是重写业务。
 
-### Python → Rust 设计映射
+### 关键抽象
 
-| Python（`octop-gateway`） | Rust（`buddy-gateway`） |
+| 抽象 | 职责 |
 |---|---|
-| `BaseChannel`（抽象基类） | `Channel` trait + `ChannelCore`（共享状态） |
-| `_default_constraints(self)` | `default_constraints()` + `configure_constraints(&self, …)` |
-| `_process_inbound`（可覆写，`super()._process_inbound`） | `process_inbound` + `default_process_inbound_body` |
-| `MessageProcessor`（异步生成器） | `Arc<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item = MessageEvent> + Send>> + Send + Sync>` |
-| `add_channel(..., **kwargs)` | `add_channel_full(..., ChannelOptions { … })` |
-| `ChannelConfig.from_dict` | `channels::normalize_config`（别名 + strip + 强制转换） |
-| `asyncio` | `tokio` |
+| `Channel` trait + `ChannelCore` | 平台契约（start / stop / parse_inbound / send_*）与共享状态分离 |
+| `default_constraints()` + `configure_constraints(&self, …)` | 每通道默认约束，以及依赖 config 的动态调整（如打字间隔） |
+| `process_inbound` + `default_process_inbound_body` | 可覆写的入站管线，仍可委托标准循环 |
+| `MessageProcessor` | `Arc<dyn Fn(InboundMessage) -> Pin<Box<dyn Stream<Item = MessageEvent> + Send>> + Send + Sync>` |
+| `add_channel_full(..., ChannelOptions { … })` | 完整构造：processor / id / debounce / 约束覆盖 |
+| `channels::normalize_config` | 配置归一化：字段别名、去空白、按通道强制转换 |
+| `tokio` | 驱动所有通道与 worker 池的异步运行时 |
 
 ### 技术栈
 
@@ -71,7 +70,7 @@
 | Telegram | `telegram` | HTTP 长轮询 | ✅ | ✅ |
 | Discord | `discord` | Gateway WebSocket + REST（支持代理） | ✅ | ✅ |
 
-每个通道都按原版实现了：真实长连接、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/PARITY.md`](docs/PARITY.md)。
+每个通道都实现了：真实长连接、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/PARITY.md`](docs/PARITY.md)。
 
 ## 快速开始
 
@@ -137,7 +136,7 @@ TELEGRAM_BOT_TOKEN=123:abc cargo run --example telegram_bot
 cargo run --example loopback_echo
 ```
 
-示例一览（与 Python 原版一一对应）：`telegram_bot`、`discord_bot`、`feishu_bot`、`qq_bot`、`wecom_bot`、`weixin_bot`、`xiaoyi_bot`、`mqtt_bot`、`all_channels`、`advanced/{feishu_advanced,qq_advanced,push_scheduler}`，以及新增的 `loopback_echo`。
+示例一览：`telegram_bot`、`discord_bot`、`feishu_bot`、`qq_bot`、`wecom_bot`、`weixin_bot`、`xiaoyi_bot`、`mqtt_bot`、`all_channels`、`advanced/{feishu_advanced,qq_advanced,push_scheduler}`，以及 `loopback_echo`（无需网络，跑通完整管线）。
 
 环境变量可复制 `.env.example` 为 `.env`（示例会自动加载）。
 
@@ -206,17 +205,9 @@ cargo build --release       # 优化构建
 
 > 项目在 `Cargo.toml` 中设置了 `[profile.dev] incremental = false`，以获得确定性构建。
 
-## 与原版的对照
+## 通道覆盖
 
-每个通道都做了 1:1 移植：真实传输、入站媒体解析、出站平台媒体上传、覆写钩子、配置别名与子模块。逐项对照矩阵（含少数「Rust 惯用法映射，非功能缺口」的说明）见 [`docs/PARITY.md`](docs/PARITY.md)；架构映射见 [`docs/DESIGN.md`](docs/DESIGN.md)。
-
-## 🔗 相关项目
-
-| 项目 | 说明 |
-|------|------|
-| [octop-gateway](https://github.com/TencentCloud/octop-gateway) | 本项目的 Python 原版实现 |
-| [octop-harness](https://github.com/TencentCloud/octop-harness) | 驱动网关处理器的 Agent 运行时 |
-| [Octop](https://github.com/TencentCloud/Octop) | 组合 Harness 栈的自托管助手 |
+每个通道都实现了真实传输、入站媒体解析、出站媒体上传、覆写钩子与配置别名。逐通道矩阵见 [`docs/PARITY.md`](docs/PARITY.md)；架构说明见 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
 ## 📄 许可证
 
