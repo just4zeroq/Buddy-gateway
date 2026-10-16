@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Buddy Gateway</h1>
-  <p><strong>Multi-platform IM channel bridge for AI agents and bots — one abstraction layer, ten IM platforms.</strong></p>
+  <p><strong>Multi-platform IM channel bridge for AI agents and bots — one abstraction layer, fifteen IM platforms.</strong></p>
 </div>
 
 <p align="center">
@@ -15,7 +15,7 @@
 
 ---
 
-**buddy-gateway** is a multi-platform IM channel bridge with a unified message abstraction for AI agents and bots. It connects to mainstream IM platforms and normalizes every inbound message into one processing pipeline, so your agent logic is written **once** and runs across Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, and Discord.
+**buddy-gateway** is a multi-platform IM channel bridge with a unified message abstraction for AI agents and bots. It connects to mainstream IM platforms and normalizes every inbound message into one processing pipeline, so your agent logic is written **once** and runs across Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, Discord, Slack, WhatsApp, LINE, WeChat Official Accounts, and Google Chat.
 
 > Every channel ships with its real transport, inbound media parsing, outbound media upload, and platform-specific hooks behind one unified interface — see [`docs/CHANNELS.md`](docs/CHANNELS.md) for the per-channel coverage matrix.
 
@@ -23,7 +23,7 @@
 
 | | Feature | Description |
 |---|---------|-------------|
-| 🔌 | **10 platforms, one processor** | Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, Discord — all behind one interface |
+| 🔌 | **15 platforms, one processor** | Feishu, DingTalk, QQ, WeCom, WeChat iLink, Yuanbao, Xiaoyi, MQTT, Telegram, Discord, Slack, WhatsApp, LINE, WeChat Official Accounts, Google Chat — all behind one interface |
 | 🧩 | **Unified abstraction** | `Channel` + `ChannelCore` turn each platform's quirks into a common `InboundMessage` / `MessageEvent` model |
 | 📨 | **Streaming events** | Your processor returns a `Stream<Item = MessageEvent>` — first-class token streaming |
 | 💾 | **Pluggable media** | `MediaBackend` stores attachments; `FileSystemMediaBackend` ships by default |
@@ -56,12 +56,12 @@ The gateway sits between your agent and the outside world. Each platform is impl
 |-------|-----------|
 | **Language** | Rust 2021 (MSRV: stable, built with 1.95) |
 | **Async runtime** | `tokio` |
-| **Channel model** | `Channel` trait + per-platform adapter (10 built-in) |
+| **Channel model** | `Channel` trait + per-platform adapter (15 built-in) + `WebhookAdapter` for callback platforms |
 | **Messaging model** | `InboundMessage` / `MessageEvent` / `ContentPart` |
 | **Orchestration** | `ChannelManager` (async queues, worker pools, session locks) |
 | **Media** | `MediaBackend` (`FileSystemMediaBackend` default) |
 | **Constraints** | Rate limit / timeout / placeholder / typing keepalive |
-| **Transport** | `reqwest` (REST) · `tokio-tungstenite` (WS) · `rumqttc` (MQTT) |
+| **Transport** | `reqwest` (REST) · `tokio-tungstenite` (WS) · `rumqttc` (MQTT) · `axum` (inbound webhooks) |
 | **Crypto** | `rustls` · `sha1`/`sha2`/`hmac` · `aes`/`aes-gcm`/`cbc`/`ecb` |
 
 ### Features
@@ -80,8 +80,37 @@ The gateway sits between your agent and the outside world. Each platform is impl
 | MQTT | `mqtt` | MQTT (TCP / TLS / WebSocket) | ✅ | ✅ |
 | Telegram | `telegram` | HTTP long-polling | ✅ | ✅ |
 | Discord | `discord` | Gateway WebSocket + REST (proxy-aware) | ✅ | ✅ |
+| Slack | `slack` | Socket Mode WebSocket + Web API | ✅ | ✅ |
+| WhatsApp | `whatsapp` | Inbound webhook + Graph API | ✅ | ✅ |
+| LINE | `line` | Inbound webhook + Messaging API | ✅ | ✅ |
+| WeChat Official Account | `wechat_mp` | Inbound webhook (XML / AES) + 客服消息 | ✅ | 🟡 |
+| Google Chat | `googlechat` | Inbound webhook (JWT) + Chat API | ✅ | ✅ |
 
-Every channel ships with its real long connection, inbound media parsing, outbound platform media upload, overridden hooks, config field aliases, and (where applicable) crypto/login submodules. See [`docs/CHANNELS.md`](docs/CHANNELS.md).
+Every channel ships with its real transport, inbound media parsing, outbound platform media upload, overridden hooks, config field aliases, and (where applicable) crypto/login submodules. See [`docs/CHANNELS.md`](docs/CHANNELS.md).
+
+#### Inbound webhooks
+
+Eleven channels own a long-lived connection. The other four receive events as
+provider-initiated `POST`s, which [`WebhookServer`](src/webhook.rs) serves:
+
+```rust
+use std::sync::Arc;
+use buddy_gateway::channels::line::{LineConfig, LineWebhook};
+use buddy_gateway::manager::{ChannelManager, ChannelOptions};
+use buddy_gateway::webhook::{WebhookAdapter, WebhookServer};
+
+let cfg = LineConfig { channel_access_token: token, channel_secret: secret, ..Default::default() };
+let channel_id = manager.add_line_channel(cfg.clone(), ChannelOptions::new()).await?;
+
+let mut server = WebhookServer::new();
+server.mount_channel(&manager, "/webhooks/line", Arc::new(LineWebhook::new(cfg)), &channel_id).await?;
+server.serve("0.0.0.0:8080").await?;
+```
+
+Mounting captures the channel's enqueue callback, so request handling needs no
+manager reference and no lock. Signature verification is constant-time and runs
+over the raw body — terminate TLS in front and forward the bytes untouched.
+
 
 #### Unified message abstraction
 - `InboundMessage` carries the text, structured `ContentPart`s (text / image / video / audio / file), and a `ChannelSubject`.

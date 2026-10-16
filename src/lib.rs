@@ -16,9 +16,11 @@ pub mod media;
 pub mod models;
 pub mod push_routing;
 pub mod utils;
+pub mod webhook;
 
 pub mod channels;
 
 pub use channel::{Channel, ChannelConfig, ChannelConfigLike, MessageProcessor};
 pub use errors::{GatewayError, Result};
 pub use manager::{ChannelManager, ChannelOptions, MessagePredicate, PreLockHandler};
+pub use webhook::{WebhookAdapter, WebhookOutcome, WebhookRequest, WebhookResponse, WebhookServer};

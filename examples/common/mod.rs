@@ -81,6 +81,16 @@ pub fn env_u16(key: &str, default: u16) -> u16 {
         .unwrap_or(default)
 }
 
+/// Read a comma/whitespace separated env var into a list (empty when unset).
+pub fn env_list(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .unwrap_or_default()
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Processors
 // ---------------------------------------------------------------------------

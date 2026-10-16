@@ -7,21 +7,29 @@
 //! - the `channel_adapter!` macro that generates the repetitive struct /
 //! `new` / `ChannelConfigLike` scaffolding for every adapter.
 
+use std::sync::Arc;
+
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::channel::{Channel, MessageProcessor};
 use crate::errors::{GatewayError, Result};
+use crate::webhook::WebhookAdapter;
 
 pub mod dingtalk;
 pub mod discord;
 pub mod feishu;
+pub mod googlechat;
+pub mod line;
 pub mod loopback;
 pub mod mqtt;
 pub mod qq;
+pub mod slack;
 pub mod telegram;
+pub mod wechat_mp;
 pub mod wecom;
 pub mod weixin;
+pub mod whatsapp;
 pub mod xiaoyi;
 pub mod yuanbao;
 
@@ -42,6 +50,11 @@ pub enum ChannelKind {
     Xiaoyi,
     Mqtt,
     Telegram,
+    Slack,
+    WhatsApp,
+    Line,
+    WechatMp,
+    GoogleChat,
 }
 
 impl ChannelKind {
@@ -58,6 +71,11 @@ impl ChannelKind {
             "xiaoyi" => Some(ChannelKind::Xiaoyi),
             "mqtt" => Some(ChannelKind::Mqtt),
             "telegram" => Some(ChannelKind::Telegram),
+            "slack" => Some(ChannelKind::Slack),
+            "whatsapp" => Some(ChannelKind::WhatsApp),
+            "line" => Some(ChannelKind::Line),
+            "wechat_mp" => Some(ChannelKind::WechatMp),
+            "googlechat" => Some(ChannelKind::GoogleChat),
             _ => None,
         }
     }
@@ -75,6 +93,11 @@ impl ChannelKind {
             ChannelKind::Xiaoyi => "xiaoyi",
             ChannelKind::Mqtt => "mqtt",
             ChannelKind::Telegram => "telegram",
+            ChannelKind::Slack => "slack",
+            ChannelKind::WhatsApp => "whatsapp",
+            ChannelKind::Line => "line",
+            ChannelKind::WechatMp => "wechat_mp",
+            ChannelKind::GoogleChat => "googlechat",
         }
     }
 }
@@ -82,8 +105,12 @@ impl ChannelKind {
 /// All supported channel kind keys.
 pub const SUPPORTED_CHANNEL_KINDS: &[&str] = &[
     "discord", "feishu", "dingtalk", "qq", "wecom", "weixin", "yuanbao", "xiaoyi", "mqtt",
-    "telegram",
+    "telegram", "slack", "whatsapp", "line", "wechat_mp", "googlechat",
 ];
+
+/// Channel kinds that receive their events over HTTP webhooks rather than a
+/// long-lived connection.
+pub const WEBHOOK_CHANNEL_KINDS: &[&str] = &["whatsapp", "line", "wechat_mp", "googlechat"];
 
 // ===========================================================================
 // DRY scaffolding macro.
@@ -197,6 +224,29 @@ fn aliases_for(channel_type: &str) -> &'static [(&'static str, &'static str)] {
         "discord" => &[("token", "bot_token")],
         "dingtalk" => &[("client_id", "app_key"), ("client_secret", "app_secret")],
         "qq" => &[("client_secret", "secret")],
+        "slack" => &[("token", "bot_token"), ("app_level_token", "app_token")],
+        "whatsapp" => &[
+            ("phone_id", "phone_number_id"),
+            ("permanent_token", "access_token"),
+            ("graph_api_version", "api_version"),
+        ],
+        "line" => &[
+            ("channel_token", "channel_access_token"),
+            ("access_token", "channel_access_token"),
+            ("secret", "channel_secret"),
+        ],
+        "wechat_mp" => &[
+            ("aes_key", "encoding_aes_key"),
+            ("encoding_key", "encoding_aes_key"),
+            ("server_token", "token"),
+            ("secret", "app_secret"),
+        ],
+        "googlechat" => &[
+            ("audience", "expected_audience"),
+            ("aud", "expected_audience"),
+            ("token", "access_token"),
+            ("bot_name", "bot_user_name"),
+        ],
         "yuanbao" => &[
             ("appId", "app_key"),
             ("appKey", "app_key"),
@@ -218,6 +268,32 @@ fn aliases_for(channel_type: &str) -> &'static [(&'static str, &'static str)] {
         ],
         _ => &[],
     }
+}
+
+/// Deserialize a whitelist field that may be a JSON array of strings or a
+/// single comma/whitespace separated string (config-file friendly).
+pub fn string_or_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::String(s)) => s
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
+            .collect(),
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|v| match v {
+                Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
+                Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(other) => vec![other.to_string()],
+    })
 }
 
 /// Truthiness for a JSON value (used for `c2c_streaming` / `enabled`).
@@ -445,5 +521,87 @@ pub fn build_channel(
             ensure_credentials(channel_type, &cfg)?;
             Ok(Box::new(telegram::TelegramChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
         }
+        ChannelKind::Slack => {
+            let cfg = slack::SlackConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Box::new(slack::SlackChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
+        }
+        ChannelKind::WhatsApp => {
+            let cfg = whatsapp::WhatsAppConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Box::new(whatsapp::WhatsAppChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
+        }
+        ChannelKind::Line => {
+            let cfg = line::LineConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Box::new(line::LineChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
+        }
+        ChannelKind::WechatMp => {
+            let cfg = wechat_mp::WechatMpConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Box::new(wechat_mp::WechatMpChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
+        }
+        ChannelKind::GoogleChat => {
+            let cfg = googlechat::GoogleChatConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Box::new(googlechat::GoogleChatChannel::new(processor, cfg, channel_id, tenant_id, 0.0)))
+        }
+    }
+}
+
+// ===========================================================================
+// Webhook-based channels
+// ===========================================================================
+
+/// Default mount path for a webhook-based channel kind.
+///
+/// Slack is deliberately absent: Socket Mode needs no public endpoint. Use
+/// [`crate::webhook::WebhookServer`] with an explicit path if you deploy
+/// Slack's HTTP Events API instead.
+pub fn webhook_path_for(channel_type: &str) -> Result<&'static str> {
+    match ChannelKind::from_str(channel_type) {
+        Some(ChannelKind::WhatsApp) => Ok("/webhooks/whatsapp"),
+        Some(ChannelKind::Line) => Ok("/webhooks/line"),
+        Some(ChannelKind::WechatMp) => Ok("/webhooks/wechat"),
+        Some(ChannelKind::GoogleChat) => Ok("/webhooks/googlechat"),
+        Some(other) => Err(GatewayError::Other(format!(
+            "channel kind `{}` does not deliver events over webhooks",
+            other.as_str()
+        ))),
+        None => Err(GatewayError::UnknownChannel(channel_type.to_string())),
+    }
+}
+
+/// Build the [`WebhookAdapter`] for a webhook-based channel kind from its JSON
+/// config (normalized + credential-checked, exactly like [`build_channel`]).
+pub fn build_webhook_adapter(channel_type: &str, config: &Value) -> Result<Arc<dyn WebhookAdapter>> {
+    let kind = ChannelKind::from_str(channel_type)
+        .ok_or_else(|| GatewayError::UnknownChannel(channel_type.to_string()))?;
+    let config = normalize_config(channel_type, config);
+    match kind {
+        ChannelKind::WhatsApp => {
+            let cfg = whatsapp::WhatsAppConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Arc::new(whatsapp::WhatsAppWebhook::new(cfg)))
+        }
+        ChannelKind::Line => {
+            let cfg = line::LineConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Arc::new(line::LineWebhook::new(cfg)))
+        }
+        ChannelKind::WechatMp => {
+            let cfg = wechat_mp::WechatMpConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Arc::new(wechat_mp::WechatMpWebhook::new(cfg)))
+        }
+        ChannelKind::GoogleChat => {
+            let cfg = googlechat::GoogleChatConfig::deserialize(&config)?;
+            ensure_credentials(channel_type, &cfg)?;
+            Ok(Arc::new(googlechat::GoogleChatWebhook::new(cfg)))
+        }
+        other => Err(GatewayError::Other(format!(
+            "channel kind `{}` does not deliver events over webhooks",
+            other.as_str()
+        ))),
     }
 }

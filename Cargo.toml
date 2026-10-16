@@ -11,6 +11,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
+# Inbound HTTP webhook service (WhatsApp / LINE / WeChat MP / Google Chat).
+axum = "0.7"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 # Pin a single rustls crypto provider so WSS handshakes don't panic with
 # "Could not automatically determine the process-level CryptoProvider".
@@ -54,6 +56,10 @@ async-trait = "0.1"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
+# The webhook integration tests serve the router on an ephemeral port and drive
+# it with real signed HTTP requests.
+axum = "0.7"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 # Advanced examples live in a subdirectory, so declare them explicitly.
 [[example]]

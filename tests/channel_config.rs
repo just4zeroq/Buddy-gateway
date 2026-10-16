@@ -7,6 +7,7 @@ use serde_json::json;
 use buddy_gateway::channel::{ChannelConfig, ChannelConfigLike, ChannelCredentialsError};
 use buddy_gateway::channels::{
     build_channel, normalize_config, ChannelKind, SUPPORTED_CHANNEL_KINDS,
+    WEBHOOK_CHANNEL_KINDS,
 };
 use buddy_gateway::channels::dingtalk::DingTalkConfig;
 use buddy_gateway::channels::feishu::FeishuConfig;
@@ -54,13 +55,29 @@ fn channel_kind_matches_supported_set() {
         ChannelKind::Xiaoyi,
         ChannelKind::Mqtt,
         ChannelKind::Telegram,
+        ChannelKind::Slack,
+        ChannelKind::WhatsApp,
+        ChannelKind::Line,
+        ChannelKind::WechatMp,
+        ChannelKind::GoogleChat,
     ]
     .iter()
     .map(|k| k.as_str())
     .collect();
     let supported: HashSet<&str> = SUPPORTED_CHANNEL_KINDS.iter().copied().collect();
     assert_eq!(kinds, supported);
-    assert_eq!(SUPPORTED_CHANNEL_KINDS.len(), 10);
+    assert_eq!(SUPPORTED_CHANNEL_KINDS.len(), 15);
+}
+
+#[test]
+fn webhook_kinds_are_a_subset_of_supported() {
+    for kind in WEBHOOK_CHANNEL_KINDS {
+        assert!(
+            SUPPORTED_CHANNEL_KINDS.contains(kind),
+            "webhook kind {kind} is not in SUPPORTED_CHANNEL_KINDS"
+        );
+        assert!(ChannelKind::from_str(kind).is_some());
+    }
 }
 
 #[test]

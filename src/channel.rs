@@ -346,6 +346,20 @@ pub trait Channel: Send + Sync {
     async fn send_media(&mut self, subject: &ChannelSubject, media: &ContentPart) -> Result<()>;
     fn parse_inbound(&self, raw: &RawPayload) -> Result<InboundMessage>;
 
+    /// Parse a queued payload, short-circuiting payloads the manager already
+    /// parsed.
+    ///
+    /// The worker parses each item once to derive its session key and to decide
+    /// what to batch, then hands the merged result back to the pipeline. Without
+    /// this, every channel would have to accept its own already-normalized
+    /// [`InboundMessage`] as a second payload shape.
+    fn parse_payload(&self, raw: &RawPayload) -> Result<InboundMessage> {
+        match raw {
+            RawPayload::Preparsed(m) => Ok(m.clone()),
+            other => self.parse_inbound(other),
+        }
+    }
+
     // ----- platform overridable hooks (defaults provided) -----
     async fn preprocess_inbound(&mut self, _message: &mut InboundMessage) -> Result<()> {
         Ok(())
@@ -763,7 +777,7 @@ pub trait Channel: Send + Sync {
         &mut self,
         raw: &RawPayload,
     ) -> Result<Option<(InboundMessage, ChannelSubject)>> {
-        let mut message = self.parse_inbound(raw)?;
+        let mut message = self.parse_payload(raw)?;
         self.preprocess_inbound(&mut message).await?;
         self.core_mut().track_subject(&message);
         if self.core().media_backend().is_some()

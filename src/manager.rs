@@ -282,7 +282,7 @@ impl ChannelManager {
         if let Some(pred) = self.interrupt_message_predicate.clone() {
             if let Some(ch) = self.channels.get(channel_id).cloned() {
                 let parsed = match ch.try_lock() {
-                    Ok(guard) => guard.parse_inbound(&payload).ok(),
+                    Ok(guard) => guard.parse_payload(&payload).ok(),
                     Err(_) => None,
                 };
                 if let Some(message) = parsed {
@@ -411,6 +411,17 @@ impl ChannelManager {
     fn channel_arc(&self, channel_id: &str) -> Result<Arc<AsyncMutex<Box<dyn Channel>>>> {
         self.get_channel(channel_id)
             .ok_or_else(|| GatewayError::ChannelNotFound(channel_id.to_string()))
+    }
+
+    /// Clone the enqueue callback of a registered channel.
+    ///
+    /// Used by the webhook server so that inbound HTTP requests can feed a
+    /// channel's queue without holding a manager reference (or a lock) at
+    /// request time.
+    pub async fn enqueue_handle(&self, channel_id: &str) -> Option<crate::channel::EnqueueFn> {
+        let ch = self.get_channel(channel_id)?;
+        let guard = ch.lock().await;
+        guard.core().enqueue_sender()
     }
 
     pub fn channel_ids(&self) -> Vec<String> {
@@ -774,6 +785,91 @@ impl ChannelManager {
         let channel = self.finish(&opts, channel);
         self.register(channel).await
     }
+
+    pub async fn add_slack_channel(
+        &mut self,
+        config: channels::slack::SlackConfig,
+        opts: ChannelOptions,
+    ) -> Result<String> {
+        let processor = self.resolve_processor(&opts)?;
+        let channel = Box::new(channels::slack::SlackChannel::new(
+            processor,
+            config,
+            opts.channel_id.clone(),
+            opts.tenant_id.clone(),
+            opts.debounce_seconds,
+        ));
+        let channel = self.finish(&opts, channel);
+        self.register(channel).await
+    }
+
+    pub async fn add_whatsapp_channel(
+        &mut self,
+        config: channels::whatsapp::WhatsAppConfig,
+        opts: ChannelOptions,
+    ) -> Result<String> {
+        let processor = self.resolve_processor(&opts)?;
+        let channel = Box::new(channels::whatsapp::WhatsAppChannel::new(
+            processor,
+            config,
+            opts.channel_id.clone(),
+            opts.tenant_id.clone(),
+            opts.debounce_seconds,
+        ));
+        let channel = self.finish(&opts, channel);
+        self.register(channel).await
+    }
+
+    pub async fn add_line_channel(
+        &mut self,
+        config: channels::line::LineConfig,
+        opts: ChannelOptions,
+    ) -> Result<String> {
+        let processor = self.resolve_processor(&opts)?;
+        let channel = Box::new(channels::line::LineChannel::new(
+            processor,
+            config,
+            opts.channel_id.clone(),
+            opts.tenant_id.clone(),
+            opts.debounce_seconds,
+        ));
+        let channel = self.finish(&opts, channel);
+        self.register(channel).await
+    }
+
+    pub async fn add_wechat_mp_channel(
+        &mut self,
+        config: channels::wechat_mp::WechatMpConfig,
+        opts: ChannelOptions,
+    ) -> Result<String> {
+        let processor = self.resolve_processor(&opts)?;
+        let channel = Box::new(channels::wechat_mp::WechatMpChannel::new(
+            processor,
+            config,
+            opts.channel_id.clone(),
+            opts.tenant_id.clone(),
+            opts.debounce_seconds,
+        ));
+        let channel = self.finish(&opts, channel);
+        self.register(channel).await
+    }
+
+    pub async fn add_googlechat_channel(
+        &mut self,
+        config: channels::googlechat::GoogleChatConfig,
+        opts: ChannelOptions,
+    ) -> Result<String> {
+        let processor = self.resolve_processor(&opts)?;
+        let channel = Box::new(channels::googlechat::GoogleChatChannel::new(
+            processor,
+            config,
+            opts.channel_id.clone(),
+            opts.tenant_id.clone(),
+            opts.debounce_seconds,
+        ));
+        let channel = self.finish(&opts, channel);
+        self.register(channel).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -828,7 +924,7 @@ async fn process_one(
     control_pred: Option<&MessagePredicate>,
     pre_lock: Option<&PreLockHandler>,
 ) -> Result<()> {
-    let message = guard.parse_inbound(&payload)?;
+    let message = guard.parse_payload(&payload)?;
     let session_key = guard.get_debounce_key(&message);
 
     // Control messages never batch.
@@ -839,7 +935,7 @@ async fn process_one(
     if !is_control && guard.should_batch_inbound(&batch[0]) {
         loop {
             match queue.try_recv() {
-                Ok(next) => match guard.parse_inbound(&next) {
+                Ok(next) => match guard.parse_payload(&next) {
                     Ok(m) => {
                         if control_pred.map(|p| p(&m)).unwrap_or(false) {
                             if tx.try_send(next).is_err() {

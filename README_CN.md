@@ -6,7 +6,7 @@
 
 > **多平台 IM 通道桥**：为 AI Agent / 机器人提供统一的即时通讯抽象层。
 
-`buddy-gateway` 接入主流 IM 平台，把每条入站消息归一化到同一条处理管线，因此你的 Agent 逻辑**只写一次**，就能同时跑在飞书、钉钉、QQ、企业微信、微信 iLink、元宝、小艺、MQTT、Telegram、Discord 上。
+`buddy-gateway` 接入主流 IM 平台，把每条入站消息归一化到同一条处理管线，因此你的 Agent 逻辑**只写一次**，就能同时跑在飞书、钉钉、QQ、企业微信、微信 iLink、元宝、小艺、MQTT、Telegram、Discord、Slack、WhatsApp、LINE、微信公众号、Google Chat 上。
 
 ---
 
@@ -14,7 +14,7 @@
 
 | | 特性 | 说明 |
 |---|------|------|
-| 🔌 | **10 个平台，一套处理器** | 飞书 / 钉钉 / QQ / 企业微信 / 微信 iLink / 元宝 / 小艺 / MQTT / Telegram / Discord，统一接口 |
+| 🔌 | **15 个平台，一套处理器** | 飞书 / 钉钉 / QQ / 企业微信 / 微信 iLink / 元宝 / 小艺 / MQTT / Telegram / Discord / Slack / WhatsApp / LINE / 微信公众号 / Google Chat，统一接口 |
 | 🧩 | **统一抽象** | `Channel` + `ChannelCore` 把各平台差异收敛为统一的 `InboundMessage` / `MessageEvent` 模型 |
 | 📨 | **流式事件** | 处理器返回 `Stream<Item = MessageEvent>`，天然支持 token 级流式输出 |
 | 💾 | **可插拔媒体** | `MediaBackend` 负责附件落盘，默认提供 `FileSystemMediaBackend` |
@@ -47,7 +47,7 @@
 |---|---|
 | **语言** | Rust 2021（stable，构建于 1.95） |
 | **异步运行时** | `tokio` |
-| **通道模型** | `Channel` trait + 各平台适配器（内置 10 个） |
+| **通道模型** | `Channel` trait + 各平台适配器（内置 15 个）+ 回调类平台的 `WebhookAdapter` |
 | **消息模型** | `InboundMessage` / `MessageEvent` / `ContentPart` |
 | **编排** | `ChannelManager`（异步队列 / worker 池 / 会话锁） |
 | **媒体** | `MediaBackend`（默认 `FileSystemMediaBackend`） |
@@ -69,8 +69,33 @@
 | MQTT | `mqtt` | MQTT（TCP / TLS / WebSocket） | ✅ | ✅ |
 | Telegram | `telegram` | HTTP 长轮询 | ✅ | ✅ |
 | Discord | `discord` | Gateway WebSocket + REST（支持代理） | ✅ | ✅ |
+| Slack | `slack` | Socket Mode WebSocket + Web API | ✅ | ✅ |
+| WhatsApp | `whatsapp` | 入站 Webhook + Graph API | ✅ | ✅ |
+| LINE | `line` | 入站 Webhook + Messaging API | ✅ | ✅ |
+| 微信公众号 | `wechat_mp` | 入站 Webhook（XML / AES）+ 客服消息 | ✅ | 🟡 |
+| Google Chat | `googlechat` | 入站 Webhook（JWT）+ Chat API | ✅ | ✅ |
 
-每个通道都实现了：真实长连接、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/CHANNELS.md`](docs/CHANNELS.md)。
+每个通道都实现了：真实传输、入站媒体解析、出站平台媒体上传、覆写钩子、配置字段别名与（如适用）加密 / 扫码登录子模块。详见 [`docs/CHANNELS.md`](docs/CHANNELS.md)。
+
+### 入站 Webhook
+
+11 个通道自持长连接；另外 4 个平台的入站是 provider **主动 POST** 到你的回调地址，由 `WebhookServer` 统一承载：
+
+```rust
+use std::sync::Arc;
+use buddy_gateway::channels::line::{LineConfig, LineWebhook};
+use buddy_gateway::manager::{ChannelManager, ChannelOptions};
+use buddy_gateway::webhook::{WebhookAdapter, WebhookServer};
+
+let cfg = LineConfig { channel_access_token: token, channel_secret: secret, ..Default::default() };
+let channel_id = manager.add_line_channel(cfg.clone(), ChannelOptions::new()).await?;
+
+let mut server = WebhookServer::new();
+server.mount_channel(&manager, "/webhooks/line", Arc::new(LineWebhook::new(cfg)), &channel_id).await?;
+server.serve("0.0.0.0:8080").await?;
+```
+
+挂载时会一次性抓取该通道的入队回调，因此请求处理阶段**不需要 manager 引用、也不需要拿锁**；验签是常量时间的，且对**原始请求体**计算——请在前置终止 TLS 并原样转发字节。
 
 ## 快速开始
 
