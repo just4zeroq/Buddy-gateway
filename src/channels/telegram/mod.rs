@@ -9,8 +9,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::time::Duration;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::channel::{Channel, EnqueueFn};
 use crate::errors::{GatewayError, Result};
@@ -644,6 +645,9 @@ pub struct TelegramConfig {
     pub link_preview: bool,
     /// Send audio parts as voice messages.
     pub audio_as_voice: bool,
+    /// Merge the members of one inbound `media_group` into a single turn, and
+    /// send consecutive same-kind attachments back out as one album.
+    pub albums: bool,
 }
 
 impl TelegramConfig {
@@ -679,6 +683,7 @@ impl Default for TelegramConfig {
             protect_content: false,
             link_preview: true,
             audio_as_voice: false,
+            albums: false,
         }
     }
 }
@@ -1013,6 +1018,255 @@ impl BoundedSet {
         }
         false
     }
+
+    /// Membership test that does not extend the window (edit suppression).
+    fn contains(&self, key: &str) -> bool {
+        self.seen.iter().any(|k| k == key)
+    }
+}
+
+/// One inbound album: chat + topic + media group + sender.
+///
+/// The sender is part of the identity so activation can come from any member's
+/// caption but never merges members from two different users.
+type AlbumKey = (String, String, String, String);
+
+/// Members buffered while waiting for one that activates the bot.
+///
+/// FIFO with a deadline per key, so a group that never activates is dropped
+/// instead of being held forever.
+struct PassiveAlbums {
+    entries: VecDeque<(AlbumKey, Instant, Vec<Value>)>,
+}
+
+impl PassiveAlbums {
+    fn new() -> Self {
+        PassiveAlbums {
+            entries: VecDeque::new(),
+        }
+    }
+
+    fn expire(&mut self, now: Instant) {
+        while self.entries.front().map(|e| e.1 <= now).unwrap_or(false) {
+            self.entries.pop_front();
+        }
+    }
+
+    /// Entry for `key`, created with a fresh deadline when absent.
+    fn entry(&mut self, key: &AlbumKey, now: Instant) -> &mut (AlbumKey, Instant, Vec<Value>) {
+        if let Some(idx) = self.entries.iter().position(|e| e.0 == *key) {
+            return &mut self.entries[idx];
+        }
+        self.entries
+            .push_back((key.clone(), now + Duration::from_millis(350), Vec::new()));
+        while self.entries.len() > 100 {
+            self.entries.pop_front();
+        }
+        let last = self.entries.len() - 1;
+        &mut self.entries[last]
+    }
+
+    fn take(&mut self, key: &AlbumKey) -> Option<(Instant, Vec<Value>)> {
+        let idx = self.entries.iter().position(|e| e.0 == *key)?;
+        self.entries.remove(idx).map(|(_, expires, buffered)| (expires, buffered))
+    }
+}
+
+fn album_key(message: &Value, group_id: &str) -> AlbumKey {
+    let chat_id = message
+        .get("chat")
+        .and_then(|c| c.get("id"))
+        .and_then(json_to_string)
+        .unwrap_or_default();
+    let thread_id = message
+        .get("message_thread_id")
+        .and_then(json_to_string)
+        .unwrap_or_default();
+    let sender = if message.get("sender_chat").is_some() {
+        message.get("sender_chat")
+    } else {
+        message.get("from")
+    };
+    let sender_id = sender
+        .and_then(|s| s.get("id"))
+        .and_then(json_to_string)
+        .unwrap_or_default();
+    (chat_id, thread_id, group_id.to_string(), sender_id)
+}
+
+/// Append a member, dropping it once an album hits Telegram's 10-item cap.
+fn push_album_member(active: &mut HashMap<AlbumKey, Vec<Value>>, key: &AlbumKey, message: Value) {
+    let entry = active.entry(key.clone()).or_default();
+    if entry.len() < 10 {
+        entry.push(message);
+    } else {
+        tracing::warn!("Telegram album member limit reached; dropping member");
+    }
+}
+
+/// Deliver one collected album as a single inbound turn.
+///
+/// Members are ordered by `message_id` and each one is admitted on its own;
+/// activation can come from any caption, but a rejected sender is never
+/// carried along by an accepted one.
+#[allow(clippy::too_many_arguments)]
+async fn flush_album(
+    http: reqwest::Client,
+    token: String,
+    admission: Admission,
+    bot_id: Option<i64>,
+    bot_username: Option<String>,
+    seen_messages: Arc<tokio::sync::Mutex<BoundedSet>>,
+    active: Arc<tokio::sync::Mutex<HashMap<AlbumKey, Vec<Value>>>>,
+    cb: EnqueueFn,
+    key: AlbumKey,
+    delay: Duration,
+) {
+    tokio::time::sleep(delay).await;
+    let mut members = active.lock().await.remove(&key).unwrap_or_default();
+    members.sort_by_key(|m| m.get("message_id").and_then(|x| x.as_i64()).unwrap_or(0));
+    if !members
+        .iter()
+        .any(|m| admission.accepts(m, bot_id, bot_username.as_deref()))
+    {
+        return;
+    }
+
+    let mut result: Option<Value> = None;
+    for item in &members {
+        if !policy::should_accept_message(
+            item,
+            bot_id,
+            bot_username.as_deref(),
+            "always",
+            &admission.allowed_user_ids,
+            &admission.allowed_chat_ids,
+            admission.allow_unaddressed_commands,
+        ) {
+            continue;
+        }
+        let chat_id = item
+            .get("chat")
+            .and_then(|c| c.get("id"))
+            .and_then(json_to_string)
+            .unwrap_or_default();
+        let message_id = item
+            .get("message_id")
+            .and_then(json_to_string)
+            .unwrap_or_default();
+        if seen_messages
+            .lock()
+            .await
+            .is_duplicate(&format!("message:{}:{}", chat_id, message_id))
+        {
+            continue;
+        }
+        let Some(mut native) = build_native_from_message(&http, &token, item).await else {
+            continue;
+        };
+        native["edited"] = json!(false);
+        native["topic_isolation"] = json!(admission.topic_isolation);
+        match result.as_mut() {
+            None => result = Some(native),
+            Some(acc) => {
+                for field in ["content", "media", "file_ids"] {
+                    let incoming = native.get(field).cloned().unwrap_or_else(|| json!([]));
+                    if let (Some(dst), Value::Array(src)) = (
+                        acc.get_mut(field).and_then(|v| v.as_array_mut()),
+                        incoming,
+                    ) {
+                        dst.extend(src);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(native) = result {
+        cb(RawPayload::Json(native));
+    }
+}
+
+/// Buffer, collect, and schedule one `media_group` member.
+///
+/// Returns `true` when the update was consumed as an album member (the caller
+/// must then skip the normal single-message path).
+#[allow(clippy::too_many_arguments)]
+async fn collect_album_member(
+    http: &reqwest::Client,
+    token: &str,
+    admission: &Admission,
+    bot_id: Option<i64>,
+    bot_username: Option<&str>,
+    seen_messages: Arc<tokio::sync::Mutex<BoundedSet>>,
+    active: Arc<tokio::sync::Mutex<HashMap<AlbumKey, Vec<Value>>>>,
+    cb: &EnqueueFn,
+    passive: &mut PassiveAlbums,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+    message: &Value,
+) -> bool {
+    let Some(group_id) = message.get("media_group_id").and_then(json_to_string) else {
+        return false;
+    };
+    if !admission.albums {
+        return false;
+    }
+    // Identity, allowlists and command ownership are checked album-wide, so an
+    // uncaptioned first member still survives until a caption arrives.
+    if !policy::should_accept_message(
+        message,
+        bot_id,
+        bot_username,
+        "always",
+        &admission.allowed_user_ids,
+        &admission.allowed_chat_ids,
+        admission.allow_unaddressed_commands,
+    ) {
+        return true;
+    }
+    let key = album_key(message, &group_id);
+    let now = Instant::now();
+    passive.expire(now);
+
+    {
+        let mut guard = active.lock().await;
+        if !guard.contains_key(&key) {
+            if !admission.accepts(message, bot_id, bot_username) {
+                let entry = passive.entry(&key, now);
+                if entry.2.len() < 10 {
+                    entry.2.push(message.clone());
+                }
+                return true;
+            }
+            tasks.retain(|t| !t.is_finished());
+            if tasks.len() >= 100 {
+                tracing::warn!("Telegram pending album limit reached; dropping member");
+                return true;
+            }
+            let (expires, buffered) = passive
+                .take(&key)
+                .unwrap_or((now + Duration::from_millis(350), Vec::new()));
+            // Keep room for the activating caption even at the member cap.
+            guard.insert(key.clone(), buffered.into_iter().take(9).collect());
+            drop(guard);
+            let handle = tokio::spawn(flush_album(
+                http.clone(),
+                token.to_string(),
+                admission.clone(),
+                bot_id,
+                bot_username.map(|s| s.to_string()),
+                seen_messages.clone(),
+                active.clone(),
+                cb.clone(),
+                key.clone(),
+                expires.saturating_duration_since(now),
+            ));
+            tasks.push(handle);
+        }
+    }
+
+    let mut guard = active.lock().await;
+    push_album_member(&mut guard, &key, message.clone());
+    true
 }
 
 /// Admission + activation settings cloned into the polling task.
@@ -1024,6 +1278,8 @@ struct Admission {
     allow_unaddressed_commands: bool,
     edited_messages: bool,
     topic_isolation: bool,
+    /// Merge `media_group` members into one inbound turn.
+    albums: bool,
 }
 
 impl Admission {
@@ -1035,6 +1291,7 @@ impl Admission {
             allow_unaddressed_commands: cfg.allow_unaddressed_commands,
             edited_messages: cfg.edited_messages,
             topic_isolation: cfg.topic_isolation,
+            albums: cfg.albums,
         }
     }
 
@@ -1076,9 +1333,14 @@ async fn poll_updates(
 ) {
     let mut offset: i64 = 0;
     // Bounded, independent de-duplication windows so update churn cannot evict
-    // the source message IDs that edits are matched against.
+    // the source message IDs that edits are matched against. The message window
+    // is shared with album flushes, which resolve members after a delay.
     let mut seen_updates = BoundedSet::new(1000);
-    let mut seen_messages = BoundedSet::new(1000);
+    let seen_messages = Arc::new(tokio::sync::Mutex::new(BoundedSet::new(1000)));
+    let active_albums: Arc<tokio::sync::Mutex<HashMap<AlbumKey, Vec<Value>>>> =
+        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut passive_albums = PassiveAlbums::new();
+    let mut album_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     loop {
         let url = format!("{}{}/getUpdates", TG_API, token);
         let mut allowed_updates = vec![json!("message"), json!("callback_query")];
@@ -1190,12 +1452,31 @@ async fn poll_updates(
                     .and_then(json_to_string)
                     .unwrap_or_default();
                 if seen_messages
-                    .seen
-                    .iter()
-                    .any(|k| *k == format!("message:{}:{}", chat_id, message_id))
+                    .lock()
+                    .await
+                    .contains(&format!("message:{}:{}", chat_id, message_id))
                 {
                     continue;
                 }
+            }
+            // Album members are collected first; the group is delivered as one
+            // turn once its activation window closes.
+            if collect_album_member(
+                &http,
+                &token,
+                &admission,
+                bot_id,
+                bot_username.as_deref(),
+                seen_messages.clone(),
+                active_albums.clone(),
+                &cb,
+                &mut passive_albums,
+                &mut album_tasks,
+                message,
+            )
+            .await
+            {
+                continue;
             }
             if !admission.accepts(message, bot_id, bot_username.as_deref()) {
                 continue;
@@ -1210,7 +1491,11 @@ async fn poll_updates(
                 .get("message_id")
                 .and_then(json_to_string)
                 .unwrap_or_default();
-            if seen_messages.is_duplicate(&format!("message:{}:{}", chat_id, message_id)) {
+            if seen_messages
+                .lock()
+                .await
+                .is_duplicate(&format!("message:{}:{}", chat_id, message_id))
+            {
                 continue;
             }
             if let Some(mut native) = build_native_from_message(&http, &token, message).await {
@@ -1396,6 +1681,170 @@ impl TelegramChannel {
             _ => ("sendDocument", "document"),
         }
     }
+
+    fn album_member_type(part: &ContentPart) -> &'static str {
+        match part {
+            ContentPart::Image(_) => "photo",
+            ContentPart::Video(_) => "video",
+            ContentPart::Audio(_) => "audio",
+            _ => "document",
+        }
+    }
+
+    /// Resolve an album attachment.
+    ///
+    /// `Err` means the part cannot be delivered as part of a group; the caller
+    /// then degrades to individual sends, which preserve each attachment or
+    /// emit its own unavailable marker.
+    async fn album_source(&self, media: &ContentPart) -> Result<AlbumSource> {
+        let url = media.url().unwrap_or("").to_string();
+        let has_inline = media
+            .data()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+            || media
+                .local_path()
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+        if url.is_empty() && has_inline {
+            let (data, mime) = self.load_media_bytes(media).await?;
+            if data.len() > TG_MAX_FILE_SIZE_BYTES {
+                return Err(GatewayError::Other("Telegram upload exceeds 50 MB".into()));
+            }
+            let filename = media
+                .filename()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    let ext = mime.rsplit('/').next().unwrap_or("bin");
+                    format!("file.{}", ext)
+                });
+            return Ok(AlbumSource::Upload { data, mime, filename });
+        }
+        if !url.is_empty() {
+            let resolved = if url.starts_with("//") {
+                format!("https:{}", url)
+            } else {
+                url
+            };
+            return Ok(AlbumSource::Url(resolved));
+        }
+        Err(GatewayError::Other("Telegram attachment has no source".into()))
+    }
+
+    /// Drain the pending album in Telegram-sized batches (10 per group).
+    async fn flush_album_batch(
+        &mut self,
+        subject: &ChannelSubject,
+        pending: &mut Vec<ContentPart>,
+    ) -> Result<()> {
+        while !pending.is_empty() {
+            let take = std::cmp::min(10, pending.len());
+            let batch: Vec<ContentPart> = pending.drain(..take).collect();
+            if batch.len() == 1 {
+                self.send_media(subject, &batch[0]).await?;
+                continue;
+            }
+            self.send_media_group(subject, &batch).await?;
+        }
+        Ok(())
+    }
+
+    /// Send same-kind attachments as one `sendMediaGroup` album.
+    ///
+    /// Uploads are attached as `attach://` parts; URL members are inlined in
+    /// the `media` array. There is no fallback once a group request has been
+    /// attempted, because its result is ambiguous.
+    async fn send_media_group(
+        &mut self,
+        subject: &ChannelSubject,
+        parts: &[ContentPart],
+    ) -> Result<()> {
+        let http = self.http().await?;
+        let token = self.config.bot_token.clone();
+        let chat_id = self.chat_id_of(subject);
+
+        let mut media: Vec<Value> = Vec::new();
+        let mut form = reqwest::multipart::Form::new().text("chat_id", chat_id_value(&chat_id).to_string());
+        for (idx, part) in parts.iter().enumerate() {
+            let kind = Self::album_member_type(part);
+            match self.album_source(part).await {
+                Ok(AlbumSource::Url(url)) => media.push(json!({ "type": kind, "media": url })),
+                Ok(AlbumSource::Upload { data, mime, filename }) => {
+                    let name = format!("attach{}", idx);
+                    media.push(json!({ "type": kind, "media": format!("attach://{}", name) }));
+                    let make = || {
+                        reqwest::multipart::Part::bytes(data.clone()).file_name(filename.clone())
+                    };
+                    let field = match make().mime_str(&mime) {
+                        Ok(p) => p,
+                        Err(_) => make(),
+                    };
+                    form = form.part(name, field);
+                }
+                Err(e) => {
+                    // Preflight failed before a group request: individual sends
+                    // preserve each attachment or emit its unavailable marker.
+                    tracing::warn!("Telegram album preflight failed: {}", e);
+                    for item in parts {
+                        self.send_media(subject, item).await?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        form = form.text(
+            "media",
+            serde_json::to_string(&media).unwrap_or_else(|_| "[]".to_string()),
+        );
+        for (key, value) in self.send_options(subject, false) {
+            form = form.text(
+                key,
+                json_to_string(&value).unwrap_or_else(|| value.to_string()),
+            );
+        }
+
+        let url = format!("{}{}/sendMediaGroup", TG_API, token);
+        self.requests.acquire(Some(&chat_id)).await;
+        match http.post(&url).multipart(form).send().await {
+            Ok(resp) => {
+                if !resp.status().is_success() {
+                    let text = resp.text().await.unwrap_or_default();
+                    tracing::warn!(
+                        "Telegram sendMediaGroup failed: {}",
+                        delivery::sanitize_error_message(&text)
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("Telegram sendMediaGroup failed: {}", e),
+        }
+        Ok(())
+    }
+}
+
+/// Album bucket for a part; `""` means it can never join an album.
+///
+/// Text is always sent on its own, and voice messages cannot be grouped by the
+/// Bot API, so both fall back to the single-attachment path.
+fn album_kind(audio_as_voice: bool, part: &ContentPart) -> &'static str {
+    match part {
+        ContentPart::Image(_) | ContentPart::Video(_) => "visual",
+        ContentPart::Audio(_) if !audio_as_voice => "audio",
+        ContentPart::File(_) => "document",
+        _ => "",
+    }
+}
+
+/// How one album member reaches the Bot API.
+enum AlbumSource {
+    /// A publicly reachable URL Telegram can fetch itself.
+    Url(String),
+    /// Bytes to upload under an `attach://` reference.
+    Upload {
+        data: Vec<u8>,
+        mime: String,
+        filename: String,
+    },
 }
 
 #[async_trait]
@@ -1480,6 +1929,42 @@ impl Channel for TelegramChannel {
         self.http = None;
         self.core.set_connection_session(None);
         tracing::info!("TelegramChannel stopped");
+        Ok(())
+    }
+
+    async fn send_content(&mut self, subject: &ChannelSubject, parts: &[ContentPart]) -> Result<()> {
+        if !self.config.albums {
+            for p in parts {
+                if let Some(t) = p.text_value() {
+                    self.send_text(subject, t).await?;
+                } else {
+                    self.send_media(subject, p).await?;
+                }
+            }
+            return Ok(());
+        }
+        // Consecutive same-kind attachments become one album; anything that
+        // cannot be grouped flushes the batch and goes out on its own.
+        let mut kind: &'static str = "";
+        let mut pending: Vec<ContentPart> = Vec::new();
+        for part in parts {
+            let next = album_kind(self.config.audio_as_voice, part);
+            if next.is_empty() {
+                self.flush_album_batch(subject, &mut pending).await?;
+                if let Some(t) = part.text_value() {
+                    self.send_text(subject, t).await?;
+                } else {
+                    self.send_media(subject, part).await?;
+                }
+                continue;
+            }
+            if kind != next {
+                self.flush_album_batch(subject, &mut pending).await?;
+            }
+            kind = next;
+            pending.push(part.clone());
+        }
+        self.flush_album_batch(subject, &mut pending).await?;
         Ok(())
     }
 
@@ -1889,5 +2374,270 @@ mod tests {
         .await
         .expect("native payload");
         assert_eq!(native.get("user_id").unwrap().as_str().unwrap(), "");
+    }
+}
+
+#[cfg(test)]
+mod album_tests {
+    use super::*;
+    use crate::models::{AudioContent, FileContent, ImageContent, VideoContent};
+
+    /// A caption-only member: no `file_id`, so no `getFile` round-trip.
+    fn member(chat_id: i64, message_id: i64, caption: &str, chat_type: &str) -> Value {
+        json!({
+            "message_id": message_id,
+            "chat": {"id": chat_id, "type": chat_type},
+            "from": {"id": 7},
+            "media_group_id": "g1",
+            "caption": caption,
+        })
+    }
+
+    fn admission_with(cfg: TelegramConfig) -> Admission {
+        Admission::from_config(&cfg)
+    }
+
+    fn spy() -> (EnqueueFn, Arc<std::sync::Mutex<Vec<Value>>>) {
+        let delivered: Arc<std::sync::Mutex<Vec<Value>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = delivered.clone();
+        let cb: EnqueueFn = Arc::new(move |payload| {
+            if let RawPayload::Json(v) = payload {
+                sink.lock().expect("delivery sink").push(v);
+            }
+        });
+        (cb, delivered)
+    }
+
+    fn texts(payload: &Value) -> Vec<String> {
+        payload
+            .get("content")
+            .and_then(|c| c.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn album_key_separates_chat_topic_group_and_sender() {
+        let a = member(-100, 1, "a", "supergroup");
+        let b = member(-100, 2, "b", "supergroup");
+        let mut c = member(-100, 3, "c", "supergroup");
+        c["message_thread_id"] = json!(5);
+        let mut d = member(-100, 4, "d", "supergroup");
+        d["from"]["id"] = json!(9);
+
+        assert_eq!(album_key(&a, "g1"), album_key(&b, "g1"));
+        assert_ne!(album_key(&a, "g1"), album_key(&c, "g1"));
+        assert_ne!(album_key(&a, "g1"), album_key(&d, "g1"));
+        assert_ne!(album_key(&a, "g1"), album_key(&a, "g2"));
+    }
+
+    #[test]
+    fn passive_albums_expire_and_stay_bounded() {
+        let mut passive = PassiveAlbums::new();
+        let now = Instant::now();
+        let key = album_key(&member(-100, 1, "a", "supergroup"), "g1");
+        passive.entry(&key, now).2.push(json!(1));
+        assert_eq!(passive.entries.len(), 1);
+        passive.expire(now + Duration::from_secs(1));
+        assert!(passive.entries.is_empty());
+
+        for i in 0..120 {
+            let k = (format!("chat{}", i), String::new(), "g".to_string(), String::new());
+            passive.entry(&k, now).2.push(json!(i));
+        }
+        assert_eq!(passive.entries.len(), 100);
+    }
+
+    #[test]
+    fn album_members_are_capped_at_ten() {
+        let mut active: HashMap<AlbumKey, Vec<Value>> = HashMap::new();
+        let key = album_key(&member(-100, 1, "a", "supergroup"), "g1");
+        for i in 0..12 {
+            push_album_member(&mut active, &key, member(-100, i, "x", "supergroup"));
+        }
+        assert_eq!(active[&key].len(), 10);
+    }
+
+    #[test]
+    fn album_kind_classifies_every_part() {
+        let image = ContentPart::Image(ImageContent::default());
+        let video = ContentPart::Video(VideoContent::default());
+        let audio = ContentPart::Audio(AudioContent::default());
+        let file = ContentPart::File(FileContent::default());
+        let text = ContentPart::text("hi");
+
+        assert_eq!(album_kind(false, &image), "visual");
+        assert_eq!(album_kind(false, &video), "visual");
+        assert_eq!(album_kind(false, &audio), "audio");
+        assert_eq!(album_kind(false, &file), "document");
+        assert_eq!(album_kind(false, &text), "");
+        // Voice messages cannot be grouped, so they take the single path.
+        assert_eq!(album_kind(true, &audio), "");
+    }
+
+    #[tokio::test]
+    async fn flush_album_merges_members_in_message_order() {
+        let key = album_key(&member(-100, 1, "a", "supergroup"), "g1");
+        let active = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            key.clone(),
+            vec![
+                member(-100, 3, "third", "supergroup"),
+                member(-100, 1, "first", "supergroup"),
+                member(-100, 2, "second", "supergroup"),
+            ],
+        );
+        let seen = Arc::new(tokio::sync::Mutex::new(BoundedSet::new(1000)));
+        let (cb, delivered) = spy();
+
+        flush_album(
+            reqwest::Client::new(),
+            "token".to_string(),
+            admission_with(TelegramConfig::default()),
+            Some(1),
+            Some("bot".to_string()),
+            seen,
+            active,
+            cb,
+            key,
+            Duration::from_millis(0),
+        )
+        .await;
+
+        let out = delivered.lock().expect("sink").clone();
+        assert_eq!(out.len(), 1, "an album is one inbound turn");
+        assert_eq!(texts(&out[0]), vec!["first", "second", "third"]);
+        // The earliest member stays the reply target.
+        assert_eq!(out[0].get("source_message_id").unwrap().as_str().unwrap(), "1");
+    }
+
+    #[tokio::test]
+    async fn flush_album_skips_members_that_fail_admission() {
+        let key = album_key(&member(-100, 1, "a", "supergroup"), "g1");
+        let active = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        active.lock().await.insert(
+            key.clone(),
+            vec![
+                member(-100, 1, "kept", "supergroup"),
+                member(-100, 2, "dropped", "channel"),
+            ],
+        );
+        let seen = Arc::new(tokio::sync::Mutex::new(BoundedSet::new(1000)));
+        let (cb, delivered) = spy();
+
+        flush_album(
+            reqwest::Client::new(),
+            "token".to_string(),
+            admission_with(TelegramConfig::default()),
+            Some(1),
+            Some("bot".to_string()),
+            seen,
+            active,
+            cb,
+            key,
+            Duration::from_millis(0),
+        )
+        .await;
+
+        let out = delivered.lock().expect("sink").clone();
+        assert_eq!(texts(&out[0]), vec!["kept"]);
+    }
+
+    #[tokio::test]
+    async fn album_members_wait_for_one_that_activates_the_bot() {
+        let mut cfg = TelegramConfig::default();
+        cfg.albums = true;
+        cfg.group_activation = "mention".to_string();
+        let admission = admission_with(cfg);
+
+        let active = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let seen = Arc::new(tokio::sync::Mutex::new(BoundedSet::new(1000)));
+        let (cb, delivered) = spy();
+        let mut passive = PassiveAlbums::new();
+        let mut tasks = Vec::new();
+        let http = reqwest::Client::new();
+
+        // Uncaptioned-in-activation-terms member: buffered, not delivered.
+        let first = member(-100, 1, "first", "supergroup");
+        assert!(
+            collect_album_member(
+                &http,
+                "token",
+                &admission,
+                Some(1),
+                Some("bot"),
+                seen.clone(),
+                active.clone(),
+                &cb,
+                &mut passive,
+                &mut tasks,
+                &first,
+            )
+            .await
+        );
+        assert_eq!(passive.entries.len(), 1);
+        assert!(active.lock().await.is_empty());
+        assert!(delivered.lock().expect("sink").is_empty());
+
+        // The mentioning member activates the whole album.
+        let mut second = member(-100, 2, "hey @bot", "supergroup");
+        second["caption_entities"] = json!([{ "type": "mention", "offset": 4, "length": 4 }]);
+        assert!(
+            collect_album_member(
+                &http,
+                "token",
+                &admission,
+                Some(1),
+                Some("bot"),
+                seen.clone(),
+                active.clone(),
+                &cb,
+                &mut passive,
+                &mut tasks,
+                &second,
+            )
+            .await
+        );
+        assert_eq!(tasks.len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        let out = delivered.lock().expect("sink").clone();
+        assert_eq!(out.len(), 1, "both members arrive as one turn");
+        assert_eq!(texts(&out[0]), vec!["first", "hey @bot"]);
+    }
+
+    #[tokio::test]
+    async fn album_collection_is_inert_when_disabled() {
+        let admission = admission_with(TelegramConfig::default());
+        let active = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let seen = Arc::new(tokio::sync::Mutex::new(BoundedSet::new(1000)));
+        let (cb, delivered) = spy();
+        let mut passive = PassiveAlbums::new();
+        let mut tasks = Vec::new();
+        let msg = member(-100, 1, "hi", "supergroup");
+
+        assert!(
+            !collect_album_member(
+                &reqwest::Client::new(),
+                "token",
+                &admission,
+                Some(1),
+                Some("bot"),
+                seen,
+                active,
+                &cb,
+                &mut passive,
+                &mut tasks,
+                &msg,
+            )
+            .await
+        );
+        assert!(passive.entries.is_empty());
+        assert!(delivered.lock().expect("sink").is_empty());
     }
 }
